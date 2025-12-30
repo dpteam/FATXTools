@@ -1,5 +1,7 @@
-﻿using FATXTools.Dialogs;
+﻿// Переписано
+using FATXTools.Dialogs;
 using System;
+using System.Diagnostics; // 1. Подключаем Trace
 using System.Media;
 using System.Threading;
 using System.Threading.Tasks;
@@ -49,60 +51,108 @@ namespace FATXTools.Utilities
 
             TaskStarted?.Invoke(this, null);
 
-            _progressDialog = new ProgressDialog(this, _owner, $"Task - {title}", Maximum, Interval);
-            _progressDialog.Show();
-
-            var progress = new Progress<int>(percent =>
-            {
-                progressUpdate(percent);
-            });
-
             try
             {
-                _task = Task.Run(() =>
+                _progressDialog = new ProgressDialog(this, _owner, $"Task - {title}", Maximum, Interval);
+                _progressDialog.Show();
+
+                var progress = new Progress<int>(percent =>
                 {
-                    task(cancellationToken, progress);
-                }, cancellationToken);
+                    progressUpdate(percent);
+                });
 
-                // wait for worker task to finish.
-                await _task;
+                try
+                {
+                    _task = Task.Run(() =>
+                    {
+                        task(cancellationToken, progress);
+                    }, cancellationToken);
+
+                    // wait for worker task to finish.
+                    await _task;
+                }
+                catch (TaskCanceledException)
+                {
+                    // Правило 2: Trace.WriteLine вместо Console
+                    Trace.WriteLine("[TaskRunner] Задача была отменена пользователем.");
+                }
+                catch (Exception exception)
+                {
+                    // Правило 3: Улучшенное логирование ошибок выполнения задачи
+                    Trace.WriteLine($"[TaskRunner] Ошибка выполнения задачи: {exception.Message}");
+                    Trace.WriteLine(exception.StackTrace);
+
+                    // MessageBox оставляем для обратной связи с пользователем, но логируем в первую очередь
+                    MessageBox.Show(exception.Message);
+                }
+
+                SystemSounds.Beep.Play();
+
+                // Правило 1: Защита от падения в коллбэке завершения
+                try
+                {
+                    taskCompleted();
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"[TaskRunner] Исключение в методе завершения (taskCompleted): {ex.Message}");
+                }
             }
-            catch (TaskCanceledException)
+            catch (Exception ex)
             {
-                Console.WriteLine("Task cancelled.");
+                Trace.WriteLine($"[TaskRunner] Критическая ошибка при управлении задачей: {ex.Message}");
             }
-            catch (Exception exception)
+            finally
             {
-                MessageBox.Show(exception.Message);
+                // Убеждаемся, что диалог будет закрыт в любом случае
+                _progressDialog?.Close();
+
+                TaskCompleted?.Invoke(this, null);
+
+                _progressDialog = null;
+                _task = null;
             }
-
-            SystemSounds.Beep.Play();
-
-            taskCompleted();
-
-            _progressDialog.Close();
-
-            TaskCompleted?.Invoke(this, null);
-
-            _progressDialog = null;
-            _task = null;
         }
 
         public bool CancelTask()
         {
-            cancellationTokenSource.Cancel();
+            // Правило 1: Проверка на null перед отменой
+            if (cancellationTokenSource != null)
+            {
+                cancellationTokenSource.Cancel();
+            }
+            else
+            {
+                Trace.WriteLine("[TaskRunner] Попытка отмены задачи, но CancellationTokenSource равен null.");
+            }
 
             return (_task == null) || _task.IsCompleted;
         }
 
         public void UpdateProgress(long newValue)
         {
-            _progressDialog.UpdateProgress(newValue);
+            // Правило 1: Проверка на null перед доступом к диалогу
+            if (_progressDialog != null)
+            {
+                _progressDialog.UpdateProgress(newValue);
+            }
+            else
+            {
+                Trace.WriteLine($"[TaskRunner] Попытка обновить прогресс ({newValue}), но диалог не инициализирован.");
+            }
         }
 
         public void UpdateLabel(string newLabel)
         {
-            _progressDialog.UpdateLabel(newLabel);
+            // Правило 1: Проверка на null перед доступом к диалогу
+            if (_progressDialog != null)
+            {
+                _progressDialog.UpdateLabel(newLabel);
+            }
+            else
+            {
+                Trace.WriteLine($"[TaskRunner] Попытка обновить метку ('{newLabel}'), но диалог не инициализирован.");
+            }
         }
     }
 }

@@ -1,4 +1,6 @@
-﻿using System;
+﻿// Переписано
+using System;
+using System.Diagnostics; // 1. Подключаем Trace
 
 namespace FATX.FileSystem
 {
@@ -32,6 +34,7 @@ namespace FATX.FileSystem
         {
             this._Time = time;
         }
+
         public virtual int Year
         {
             get { return (int)((this._Time & 0xFE000000) >> 25); }
@@ -82,14 +85,20 @@ namespace FATX.FileSystem
             {
                 try
                 {
+                    // Основная попытка создания даты на основе битовых полей
                     _DateTime = new DateTime(
                         this.Year, this.Month,
                         this.Day, this.Hour,
                         this.Minute, this.Second);
                     return _DateTime.Value;
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    // Правило 1 и 3: Логируем ошибку и пытаемся использовать запасной алгоритм
+                    Trace.WriteLine($"[TimeStamp] Ошибка парсинга основной даты (Raw: 0x{_Time:X8}): {ex.Message}. Попытка запасного метода.");
+
+                    // Запасная логика (Fallback) из оригинального кода
+                    // Сохранена как есть, чтобы не ломать обратную совместимость с форматами
                     int year = (int)((this._Time & 0xffff) & 0x7f) + 2000;
                     int month = (int)((this._Time & 0xffff) >> 7) & 0xf;
                     int day = (int)((this._Time & 0xffff) >> 0xb);
@@ -100,9 +109,12 @@ namespace FATX.FileSystem
                     try
                     {
                         _DateTime = new DateTime(year, month, day, hour, minute, second);
+                        Trace.WriteLine($"[TimeStamp] Запасной метод парсинга успешен: {year}-{month}-{day} {hour}:{minute}:{second}");
                     }
-                    catch (Exception)
+                    catch (Exception innerEx)
                     {
+                        // Правило 1 и 3: Полный отказ, возвращаем минимальную дату и логируем
+                        Trace.WriteLine($"[TimeStamp] Запасной метод парсинга тоже не удался. Raw: 0x{_Time:X8}. Ошибка: {innerEx.Message}. Возврат мин. даты.");
                         _DateTime = _minWinFileTime;
                     }
 

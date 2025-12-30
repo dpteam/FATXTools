@@ -1,15 +1,16 @@
 <img align="left" width="80" height="80" src="FATXTools/appicon.ico">
 
-# FATXTools [![Build status](https://ci.appveyor.com/api/projects/status/ua22jsn54pr1398c/branch/master?svg=true)](https://ci.appveyor.com/project/aerosoul94/fatxtools/build/artifacts)
+# FATXTools [![Build status](https://github.com/dpteam/FATXTools/actions/workflows/build.yaml/badge.svg)](https://github.com/dpteam/FATXTools/actions)
 FATXTools is a data recovery tool for FATX file systems. The goal of this project is to automate searching and recovering deleted files as well as provide tools for manual data recovery.
 
 This is a C# port of the Python version: [fatx-tools](https://github.com/aerosoul94/fatx-tools)
 
-Download: [Github Releases](https://github.com/aerosoul94/FATXTools/releases)
+Download: [Github Releases](https://github.com/dpteam/FATXTools/releases)
 
 # Contributors
 * Tdijital - Thanks for the bug reports and the amazing app logo <3
 * The many many testers who provided bug reports <3
+* DartPower - Code rewrite (Vibe)
 
 # Features
 * Supports loading from hdd images or physical devices.

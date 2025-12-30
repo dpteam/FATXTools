@@ -1,5 +1,8 @@
-﻿using FATX.FileSystem;
+﻿// Переписано
+using FATX.FileSystem;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics; // 1. Подключаем Trace
 
 namespace FATXTools.Database
 {
@@ -42,6 +45,12 @@ namespace FATXTools.Database
             this.clusterChain = null;
             this.parent = null;
             this.Children = new List<DatabaseFile>();
+
+            // Правило 3: Улучшенное логирование
+            if (this.dirent == null)
+            {
+                Trace.WriteLine("[DatabaseFile] ВНИМАНИЕ: Создан DatabaseFile с null DirectoryEntry!");
+            }
         }
 
         /// <summary>
@@ -50,25 +59,42 @@ namespace FATXTools.Database
         /// <returns>Number of files in this file</returns>
         public long CountFiles()
         {
-            if (this.dirent.IsDeleted())
+            try
             {
-                return 0;
-            }
-
-            if (IsDirectory())
-            {
-                long numFiles = 1;
-
-                foreach (var dirent in Children)
+                // Правило 1: Проверка на null и удаленный статус
+                if (this.dirent == null || this.dirent.IsDeleted())
                 {
-                    numFiles += dirent.CountFiles();
+                    return 0;
                 }
 
-                return numFiles;
+                if (IsDirectory())
+                {
+                    long numFiles = 1;
+
+                    foreach (var child in Children)
+                    {
+                        try
+                        {
+                            numFiles += child.CountFiles();
+                        }
+                        catch (Exception ex)
+                        {
+                            // Правило 1: Продолжаем подсчет даже если одна ветка битая
+                            Trace.WriteLine($"[DatabaseFile] Ошибка подсчета файлов в директории '{this.FileName}': {ex.Message}");
+                        }
+                    }
+
+                    return numFiles;
+                }
+                else
+                {
+                    return 1;
+                }
             }
-            else
+            catch (Exception ex)
             {
-                return 1;
+                Trace.WriteLine($"[DatabaseFile] Критическая ошибка при подсчете файлов: {ex.Message}");
+                return 0;
             }
         }
 
@@ -79,7 +105,7 @@ namespace FATXTools.Database
 
         public void SetRanking(int value)
         {
-            ranking = value;
+            this.ranking = value;
         }
 
         public List<uint> GetCollisions()
@@ -114,6 +140,8 @@ namespace FATXTools.Database
 
         public bool IsDirectory()
         {
+            // Правило 1: Защита от NullReference
+            if (dirent == null) return false;
             return dirent.IsDirectory();
         }
 
@@ -132,16 +160,29 @@ namespace FATXTools.Database
             set => clusterChain = value;
         }
 
-        public uint Cluster => dirent.Cluster;
-        public long Offset => dirent.Offset;
-        public uint FileNameLength => dirent.FileNameLength;
-        public FileAttribute FileAttributes => dirent.FileAttributes;
-        public string FileName => dirent.FileName;
-        public byte[] FileNameBytes => dirent.FileNameBytes;
-        public uint FirstCluster => dirent.FirstCluster;
-        public uint FileSize => dirent.FileSize;
-        public TimeStamp CreationTime => dirent.CreationTime;
-        public TimeStamp LastWriteTime => dirent.LastWriteTime;
-        public TimeStamp LastAccessTime => dirent.LastAccessTime;
+        // Правило 1: Защита всех свойств, обращающихся к dirent
+        // Используем null-условный оператор (?.) чтобы избежать исключений
+
+        public uint Cluster => dirent?.Cluster ?? 0;
+
+        public long Offset => dirent?.Offset ?? 0;
+
+        public uint FileNameLength => dirent?.FileNameLength ?? 0;
+
+        public FileAttribute FileAttributes => dirent != null ? dirent.FileAttributes : 0;
+
+        public string FileName => dirent?.FileName ?? "(Error: Null)";
+
+        public byte[] FileNameBytes => dirent != null ? dirent.FileNameBytes : new byte[0];
+
+        public uint FirstCluster => dirent?.FirstCluster ?? 0;
+
+        public uint FileSize => dirent?.FileSize ?? 0;
+
+        public TimeStamp CreationTime => dirent?.CreationTime;
+
+        public TimeStamp LastWriteTime => dirent?.LastWriteTime;
+
+        public TimeStamp LastAccessTime => dirent?.LastAccessTime;
     }
 }

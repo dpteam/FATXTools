@@ -1,6 +1,8 @@
-﻿using System;
+﻿// Переписано
+using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Diagnostics; // 1. Подключаем Trace
 
 namespace FATX.FileSystem
 {
@@ -33,38 +35,59 @@ namespace FATX.FileSystem
 
         private void ReadDirectoryEntry(Platform platform, byte[] data, int offset)
         {
-            this._fileNameLength = data[offset + 0];
-            this._fileAttributes = data[offset + 1];
-
-            this._fileNameBytes = new byte[42];
-            Buffer.BlockCopy(data, offset + 2, this._fileNameBytes, 0, 42);
-
-            if (platform == Platform.Xbox)
+            // Правило 1: Проверка валидности данных перед чтением
+            // Запись занимает минимум 0x40 байт
+            if (data == null || data.Length < offset + 0x40)
             {
-                this._firstCluster = BitConverter.ToUInt32(data, offset + 0x2C);
-                this._fileSize = BitConverter.ToUInt32(data, offset + 0x30);
-                this._creationTimeAsInt = BitConverter.ToUInt32(data, offset + 0x34);
-                this._lastWriteTimeAsInt = BitConverter.ToUInt32(data, offset + 0x38);
-                this._lastAccessTimeAsInt = BitConverter.ToUInt32(data, offset + 0x3C);
-                this._creationTime = new XTimeStamp(this._creationTimeAsInt);
-                this._lastWriteTime = new XTimeStamp(this._lastWriteTimeAsInt);
-                this._lastAccessTime = new XTimeStamp(this._lastAccessTimeAsInt);
+                // Выбрасываем исключение, чтобы MetadataAnalyzer смог его поймать и пропустить поврежденную запись
+                throw new InvalidOperationException($"[DirectoryEntry] Некорректная длина массива данных для чтения записи (Offset: {offset}).");
             }
-            else if (platform == Platform.X360)
+
+            try
             {
-                Array.Reverse(data, offset + 0x2C, 4);
-                this._firstCluster = BitConverter.ToUInt32(data, offset + 0x2C);
-                Array.Reverse(data, offset + 0x30, 4);
-                this._fileSize = BitConverter.ToUInt32(data, offset + 0x30);
-                Array.Reverse(data, offset + 0x34, 4);
-                this._creationTimeAsInt = BitConverter.ToUInt32(data, offset + 0x34);
-                Array.Reverse(data, offset + 0x38, 4);
-                this._lastWriteTimeAsInt = BitConverter.ToUInt32(data, offset + 0x38);
-                Array.Reverse(data, offset + 0x3C, 4);
-                this._lastAccessTimeAsInt = BitConverter.ToUInt32(data, offset + 0x3C);
-                this._creationTime = new X360TimeStamp(this._creationTimeAsInt);
-                this._lastWriteTime = new X360TimeStamp(this._lastWriteTimeAsInt);
-                this._lastAccessTime = new X360TimeStamp(this._lastAccessTimeAsInt);
+                this._fileNameLength = data[offset + 0];
+                this._fileAttributes = data[offset + 1];
+
+                this._fileNameBytes = new byte[42];
+                Buffer.BlockCopy(data, offset + 2, this._fileNameBytes, 0, 42);
+
+                if (platform == Platform.Xbox)
+                {
+                    this._firstCluster = BitConverter.ToUInt32(data, offset + 0x2C);
+                    this._fileSize = BitConverter.ToUInt32(data, offset + 0x30);
+                    this._creationTimeAsInt = BitConverter.ToUInt32(data, offset + 0x34);
+                    this._lastWriteTimeAsInt = BitConverter.ToUInt32(data, offset + 0x38);
+                    this._lastAccessTimeAsInt = BitConverter.ToUInt32(data, offset + 0x3C);
+                    this._creationTime = new XTimeStamp(this._creationTimeAsInt);
+                    this._lastWriteTime = new XTimeStamp(this._lastWriteTimeAsInt);
+                    this._lastAccessTime = new XTimeStamp(this._lastAccessTimeAsInt);
+                }
+                else if (platform == Platform.X360)
+                {
+                    // ВНИМАНИЕ: Оригинальный код использует Array.Reverse(data, ...), 
+                    // что изменяет исходный массив данных. Если этот массив используется повторно (например, при чтении кластера),
+                    // это может привести к ошибкам. Оставлено как есть для сохранения логики, но стоит иметь в виду.
+
+                    Array.Reverse(data, offset + 0x2C, 4);
+                    this._firstCluster = BitConverter.ToUInt32(data, offset + 0x2C);
+                    Array.Reverse(data, offset + 0x30, 4);
+                    this._fileSize = BitConverter.ToUInt32(data, offset + 0x30);
+                    Array.Reverse(data, offset + 0x34, 4);
+                    this._creationTimeAsInt = BitConverter.ToUInt32(data, offset + 0x34);
+                    Array.Reverse(data, offset + 0x38, 4);
+                    this._lastWriteTimeAsInt = BitConverter.ToUInt32(data, offset + 0x38);
+                    Array.Reverse(data, offset + 0x3C, 4);
+                    this._lastAccessTimeAsInt = BitConverter.ToUInt32(data, offset + 0x3C);
+                    this._creationTime = new X360TimeStamp(this._creationTimeAsInt);
+                    this._lastWriteTime = new X360TimeStamp(this._lastWriteTimeAsInt);
+                    this._lastAccessTime = new X360TimeStamp(this._lastAccessTimeAsInt);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Правило 3: Улучшенное логирование ошибок парсинга
+                Trace.WriteLine($"[DirectoryEntry] Ошибка при разборе полей записи (Offset: {offset}): {ex.Message}");
+                throw; // Пробрасываем дальше, чтобы анализатор знал, что запись невалидна
             }
         }
 
@@ -98,8 +121,8 @@ namespace FATX.FileSystem
                     {
                         if (_fileNameLength > 42)
                         {
-                            // Warn user!
-                            //Console.WriteLine("Invalid file name length!");
+                            // Правило 2 и 3: Trace и логирование проблемы
+                            Trace.WriteLine($"[DirectoryEntry] Некорректная длина имени файла: {_fileNameLength}. Установлено значение 42.");
                             _fileNameLength = 42;
                         }
 
@@ -126,14 +149,14 @@ namespace FATX.FileSystem
         /// <summary>
         /// Get all dirents from this directory.
         /// </summary>
-        /// <returns></returns>
         public List<DirectoryEntry> Children
         {
             get
             {
                 if (!this.IsDirectory())
                 {
-                    Console.WriteLine("Trying to get children from non directory.");
+                    // Правило 2: Trace.WriteLine
+                    Trace.WriteLine($"[DirectoryEntry] Попытка получить список дочерних элементов для файла '{this.FileName}' (не является директорией).");
                 }
 
                 return _children;
@@ -143,12 +166,12 @@ namespace FATX.FileSystem
         /// <summary>
         /// Add a single dirent to this directory.
         /// </summary>
-        /// <param name="child"></param>
         public void AddChild(DirectoryEntry child)
         {
             if (!this.IsDirectory())
             {
-                Console.WriteLine("Trying to add child to non directory.");
+                // Правило 2: Trace.WriteLine
+                Trace.WriteLine($"[DirectoryEntry] Попытка добавить дочерний элемент в файл '{this.FileName}' (не является директорией).");
             }
 
             _children.Add(child);
@@ -157,7 +180,6 @@ namespace FATX.FileSystem
         /// <summary>
         /// Add list of dirents to this directory.
         /// </summary>
-        /// <param name="children">List of dirents</param>
         public void AddChildren(List<DirectoryEntry> children)
         {
             if (!IsDirectory())
@@ -201,7 +223,6 @@ namespace FATX.FileSystem
         /// <summary>
         /// Get only the path of this dirent.
         /// </summary>
-        /// <returns></returns>
         public string GetPath()
         {
             List<string> ancestry = new List<string>();
@@ -218,7 +239,6 @@ namespace FATX.FileSystem
         /// <summary>
         /// Get full path including file name.
         /// </summary>
-        /// <returns></returns>
         public string GetFullPath()
         {
             return GetPath() + "/" + FileName;

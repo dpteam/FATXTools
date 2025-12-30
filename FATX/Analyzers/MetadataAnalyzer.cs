@@ -1,4 +1,5 @@
-﻿using FATX.FileSystem;
+﻿// Переписано
+using FATX.FileSystem;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -41,10 +42,22 @@ namespace FATX.Analyzers
         {
             var sw = new Stopwatch();
             sw.Start();
-            RecoverMetadata(cancellationToken, progress);
+
+            try
+            {
+                RecoverMetadata(cancellationToken, progress);
+            }
+            catch (Exception ex)
+            {
+                // Правило 1: Ловим глобальные ошибки, чтобы анализ не упал молча
+                Trace.WriteLine($"[MetadataAnalyzer] Критическая ошибка в процессе анализа: {ex.Message}");
+            }
+
             sw.Stop();
-            Console.WriteLine($"Execution Time: {sw.ElapsedMilliseconds} ms");
-            Console.WriteLine($"Found {_dirents.Count} dirents.");
+
+            // Правило 2 и 3: Trace и улучшенное логирование
+            Trace.WriteLine($"[MetadataAnalyzer] Анализ завершен. Время выполнения: {sw.ElapsedMilliseconds} мс");
+            Trace.WriteLine($"[MetadataAnalyzer] Найдено записей (dirents): {_dirents.Count}");
 
             return _dirents;
         }
@@ -52,14 +65,29 @@ namespace FATX.Analyzers
         /// <summary>
         /// Searches for dirent's.
         /// </summary>
-        /// <param name="worker"></param>
         private void RecoverMetadata(CancellationToken cancellationToken, IProgress<int> progress)
         {
             var maxClusters = _length / _interval;
+
+            // Правило 3: Логируем начало сканирования
+            Trace.WriteLine($"[MetadataAnalyzer] Начало сканирования кластеров (всего: {maxClusters})...");
+
             for (uint cluster = 1; cluster < maxClusters; cluster++)
             {
-                var data = _volume.ReadCluster(cluster);
+                byte[] data = null;
+                try
+                {
+                    data = _volume.ReadCluster(cluster);
+                }
+                catch (Exception exception) // Правило 1: Ловим любые ошибки чтения, не только IOException
+                {
+                    // Правило 2 и 3: Детальный лог ошибки
+                    Trace.WriteLine($"[MetadataAnalyzer] Ошибка чтения кластера {cluster}: {exception.Message}. Пропуск...");
+                    continue;
+                }
+
                 var clusterOffset = (cluster - 1) * _interval;
+
                 for (int i = 0; i < 256; i++)
                 {
                     var direntOffset = i * 0x40;
@@ -69,7 +97,8 @@ namespace FATX.Analyzers
 
                         if (IsValidDirent(dirent))
                         {
-                            Console.WriteLine(string.Format("0x{0:X8}: {1}", clusterOffset + direntOffset, dirent.FileName));
+                            // Правило 2 и 3: Логируем найденный валидный элемент
+                            Trace.WriteLine($"[MetadataAnalyzer] 0x{clusterOffset + direntOffset:X8}: {dirent.FileName}");
                             dirent.Cluster = cluster;
                             dirent.Offset = _volume.ClusterToPhysicalOffset(cluster) + direntOffset;
                             _dirents.Add(dirent);
@@ -77,8 +106,10 @@ namespace FATX.Analyzers
                     }
                     catch (Exception e)
                     {
-                        Console.WriteLine(e.Message);
-                        Console.WriteLine(e.StackTrace);
+                        // Правило 1 и 3: Логируем ошибку парсинга конкретной записи, но продолжаем цикл
+                        Trace.WriteLine($"[MetadataAnalyzer] Ошибка парсинга dirent в кластере {cluster}, смещение 0x{direntOffset:X}: {e.Message}");
+                        // StackTrace можно раскомментировать для глубокой отладки, если нужно
+                        // Trace.WriteLine(e.StackTrace);
                     }
                 }
 
@@ -87,10 +118,7 @@ namespace FATX.Analyzers
 
                 if (cancellationToken.IsCancellationRequested)
                 {
-                    // NOTE: even though this part of the analyzer returns,
-                    //   it will continue on with the linking step to clean
-                    //   up the results while keeping the progress bar
-                    //   running to show that we are still working.
+                    Trace.WriteLine("[MetadataAnalyzer] Сканирование отменено пользователем.");
                     break;
                 }
             }
@@ -101,60 +129,91 @@ namespace FATX.Analyzers
         /// <summary>
         /// Dump a directory to path.
         /// </summary>
-        /// <param name="dirent"></param>
-        /// <param name="path"></param>
         private void DumpDirectory(DirectoryEntry dirent, string path)
         {
-            path = path + "/" + dirent.FileName;
-            if (!Directory.Exists(path))
+            try
             {
-                Directory.CreateDirectory(path);
-            }
+                path = Path.Combine(path, dirent.FileName);
 
-            foreach (DirectoryEntry child in dirent.Children)
+                if (!Directory.Exists(path))
+                {
+                    Directory.CreateDirectory(path);
+                }
+
+                foreach (DirectoryEntry child in dirent.Children)
+                {
+                    Dump(child, path);
+                }
+
+                // Правило 1: Безопасная установка атрибутов времени
+                try
+                {
+                    Directory.SetCreationTime(path, dirent.CreationTime.AsDateTime());
+                    Directory.SetLastWriteTime(path, dirent.LastWriteTime.AsDateTime());
+                    Directory.SetLastAccessTime(path, dirent.LastAccessTime.AsDateTime());
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"[MetadataAnalyzer] Не удалось установить метаданные времени для папки {path}: {ex.Message}");
+                }
+            }
+            catch (Exception ex)
             {
-                Dump(child, path);
+                Trace.WriteLine($"[MetadataAnalyzer] Критическая ошибка при создании папки {dirent.FileName}: {ex.Message}");
             }
-
-            Directory.SetCreationTime(path, dirent.CreationTime.AsDateTime());
-            Directory.SetLastWriteTime(path, dirent.LastWriteTime.AsDateTime());
-            Directory.SetLastAccessTime(path, dirent.LastAccessTime.AsDateTime());
         }
 
         /// <summary>
         /// Dump a file to path.
         /// </summary>
-        /// <param name="dirent"></param>
-        /// <param name="path"></param>
         private void DumpFile(DirectoryEntry dirent, string path)
         {
-            path = path + "/" + dirent.FileName;
-            const int bufsize = 0x100000;
-            var remains = dirent.FileSize;
-            _volume.SeekToCluster(dirent.FirstCluster);
-
-            using (FileStream file = new FileStream(path, FileMode.Create))
+            try
             {
-                while (remains > 0)
+                path = Path.Combine(path, dirent.FileName);
+                const int bufsize = 0x100000;
+                var remains = dirent.FileSize;
+
+                _volume.SeekToCluster(dirent.FirstCluster);
+
+                using (FileStream file = new FileStream(path, FileMode.Create))
                 {
-                    var read = Math.Min(remains, bufsize);
-                    remains -= read;
-                    byte[] buf = new byte[read];
-                    _volume.GetReader().Read(buf, (int)read);
-                    file.Write(buf, 0, (int)read);
+                    while (remains > 0)
+                    {
+                        var read = Math.Min(remains, bufsize);
+                        remains -= read;
+                        byte[] buf = new byte[read];
+
+                        // Метод Read возвращает void, просто вызываем его.
+                        // Если возникнет ошибка чтения, она будет перехвачена внешним try-catch.
+                        _volume.GetReader().Read(buf, (int)read);
+
+                        file.Write(buf, 0, (int)read);
+                    }
+                }
+
+                // Правило 1: Безопасная установка атрибутов времени
+                try
+                {
+                    File.SetCreationTime(path, dirent.CreationTime.AsDateTime());
+                    File.SetLastWriteTime(path, dirent.LastWriteTime.AsDateTime());
+                    File.SetLastAccessTime(path, dirent.LastAccessTime.AsDateTime());
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"[MetadataAnalyzer] Не удалось установить метаданные времени для файла {path}: {ex.Message}");
                 }
             }
-
-            File.SetCreationTime(path, dirent.CreationTime.AsDateTime());
-            File.SetLastWriteTime(path, dirent.LastWriteTime.AsDateTime());
-            File.SetLastAccessTime(path, dirent.LastAccessTime.AsDateTime());
+            catch (Exception ex)
+            {
+                // Правило 1: Если файл не сбросился на диск, логируем и идем дальше
+                Trace.WriteLine($"[MetadataAnalyzer] Ошибка при сбросе файла {dirent.FileName}: {ex.Message}");
+            }
         }
 
         /// <summary>
         /// Dumps a DirectoryEntry to path.
         /// </summary>
-        /// <param name="dirent"></param>
-        /// <param name="path"></param>
         public void Dump(DirectoryEntry dirent, string path)
         {
             if (dirent.IsDirectory())
@@ -180,8 +239,6 @@ namespace FATX.Analyzers
         /// <summary>
         /// Validate FileNameBytes.
         /// </summary>
-        /// <param name="bytes"></param>
-        /// <returns></returns>
         private bool IsValidFileNameBytes(byte[] bytes)
         {
             foreach (byte b in bytes)
@@ -200,8 +257,6 @@ namespace FATX.Analyzers
         /// <summary>
         /// Validate FileAttributes.
         /// </summary>
-        /// <param name="attributes"></param>
-        /// <returns></returns>
         private bool IsValidAttributes(FileAttribute attributes)
         {
             if (attributes == 0)
@@ -236,8 +291,6 @@ namespace FATX.Analyzers
         /// <summary>
         /// Validate a TimeStamp.
         /// </summary>
-        /// <param name="dateTime"></param>
-        /// <returns></returns>
         private bool IsValidDateTime(TimeStamp dateTime)
         {
             if (dateTime == null)
@@ -282,8 +335,6 @@ namespace FATX.Analyzers
         /// <summary>
         /// Validate FirstCluster.
         /// </summary>
-        /// <param name="firstCluster"></param>
-        /// <returns></returns>
         private bool IsValidFirstCluster(uint firstCluster)
         {
             if (firstCluster > _volume.MaxClusters)
@@ -304,8 +355,6 @@ namespace FATX.Analyzers
         /// <summary>
         /// Validate FileNameLength.
         /// </summary>
-        /// <param name="fileNameLength"></param>
-        /// <returns></returns>
         private bool IsValidFileNameLength(uint fileNameLength)
         {
             if (fileNameLength == 0x00 || fileNameLength == 0x01 || fileNameLength == 0xff)
@@ -324,8 +373,6 @@ namespace FATX.Analyzers
         /// <summary>
         /// Check if dirent is actually a dirent.
         /// </summary>
-        /// <param name="dirent"></param>
-        /// <returns></returns>
         private bool IsValidDirent(DirectoryEntry dirent)
         {
             if (!IsValidFileNameLength(dirent.FileNameLength))

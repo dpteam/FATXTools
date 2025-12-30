@@ -1,10 +1,11 @@
-﻿using System;
+﻿// Переписано
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Diagnostics; // 1. Подключаем Trace
 
 namespace FATX.FileSystem
 {
-
     public class Volume
     {
         private readonly DriveReader _reader;
@@ -41,17 +42,6 @@ namespace FATX.FileSystem
         private long _fileAreaLength;
         private Platform _platform;
 
-        /// <summary>
-        /// Creates a new FATX volume.
-        /// </summary>
-        /// <param name="reader">The stream that contains the FATX file system.</param>
-        /// <param name="name">The name of this volume.</param>
-        /// <param name="offset">The offset within the <paramref name="reader"/> this partition exists at.</param>
-        /// <param name="length">The length in bytes of this partition.</param>
-        /// <param name="legacy">
-        /// Set this to true if this is the legacy FATX file system. 
-        /// It appears to only be used in older DVT3 xbox systems with kernel 3633 or earlier.
-        /// </param>
         public Volume(DriveReader reader, string name, long offset, long length, bool legacy = false)
         {
             this._reader = reader;
@@ -126,39 +116,54 @@ namespace FATX.FileSystem
 
         public bool Mounted { get; private set; }
 
-        /// <summary>
-        /// Loads the FATX file system.
-        /// </summary>
         public void Mount()
         {
-            Mounted = false;
+            try
+            {
+                Trace.WriteLine($"[Volume] Попытка монтирования тома '{_partitionName}'...");
 
-            // Read and verify volume metadata.
-            ReadBootSector();
-            CalculateOffsets();
-            ReadFileAllocationTable();
+                Mounted = false;
 
-            _root = ReadDirectoryStream(_rootDirFirstCluster);
-            PopulateDirentStream(_root, _rootDirFirstCluster);
+                // Read and verify volume metadata.
+                ReadBootSector();
+                CalculateOffsets();
+                ReadFileAllocationTable();
 
-            Mounted = true;
+                _root = ReadDirectoryStream(_rootDirFirstCluster);
+                PopulateDirentStream(_root, _rootDirFirstCluster);
+
+                Mounted = true;
+                Trace.WriteLine($"[Volume] Том '{_partitionName}' успешно смонтирован.");
+            }
+            catch (Exception ex)
+            {
+                // Правило 1: Если монтаж не удался, не падаем, а логируем
+                Trace.WriteLine($"[Volume] Ошибка монтирования тома '{_partitionName}': {ex.Message}");
+                Mounted = false;
+            }
         }
 
-        /// <summary>
-        /// Read and verifies the FATX header.
-        /// </summary>
         private void ReadBootSector()
         {
-            _reader.Seek(_partitionOffset);
-            Console.WriteLine("Attempting to load FATX volume at {0:X16}", _reader.Position);
+            try
+            {
+                _reader.Seek(_partitionOffset);
+                // Правило 2 и 3: Trace с контекстом
+                Trace.WriteLine($"[Volume] Чтение загрузочного сектора по смещению 0x{_partitionOffset:X16}");
 
-            if (!_usesLegacyFormat)
-            {
-                ReadVolumeMetadata();
+                if (!_usesLegacyFormat)
+                {
+                    ReadVolumeMetadata();
+                }
+                else
+                {
+                    ReadLegacyVolumeMetadata();
+                }
             }
-            else
+            catch (Exception ex)
             {
-                ReadLegacyVolumeMetadata();
+                Trace.WriteLine($"[Volume] Критическая ошибка при чтении загрузочного сектора: {ex.Message}");
+                throw; // Пробрасываем, чтобы Mount установил Mounted = false
             }
         }
 
@@ -171,7 +176,9 @@ namespace FATX.FileSystem
 
             if (_signature != VolumeSignature)
             {
-                throw new FormatException($"Invalid FATX Signature for {_partitionName}: {_signature:X8}");
+                string msg = $"Неверная сигнатура FATX для тома {_partitionName}: {_signature:X8}. Ожидается 0x58544146.";
+                Trace.WriteLine($"[Volume] {msg}");
+                throw new FormatException(msg);
             }
         }
 
@@ -184,12 +191,12 @@ namespace FATX.FileSystem
 
             if (_signature != VolumeSignature)
             {
-                throw new FormatException($"Invalid FATX Signature for {_partitionName}: {_signature:X8}");
+                string msg = $"Неверная сигнатура Legacy FATX для тома {_partitionName}: {_signature:X8}.";
+                Trace.WriteLine($"[Volume] {msg}");
+                throw new FormatException(msg);
             }
 
             // Read BIOS_PARAMETER_BLOCK
-            // These fields are currently not being used by this reader. With some testing, we'll see if these fields
-            // are truly necessary.
             _bytesPerSector = _reader.ReadUInt16();         // 0200
             _sectorsPerCluster = _reader.ReadByte();        // 20
             _reservedSectors = _reader.ReadUInt16();        // 08
@@ -201,14 +208,17 @@ namespace FATX.FileSystem
             _rootDirFirstCluster = _reader.ReadUInt32();    // 00000001
         }
 
-        /// <summary>
-        /// Calculate offsets needed to perform work on this file system.
-        /// </summary>
         private void CalculateOffsets()
         {
             _bytesPerCluster = _sectorsPerCluster * Constants.SectorSize;
-            _maxClusters = (uint)(_partitionLength / (long)_bytesPerCluster)
-                + Constants.ReservedClusters;
+
+            // Защита от деления на ноль или переполнения, если данные повреждены
+            if (_bytesPerCluster == 0)
+            {
+                throw new InvalidOperationException("BytesPerCluster равно 0, невозможно рассчитать смещения.");
+            }
+
+            _maxClusters = (uint)(_partitionLength / (long)_bytesPerCluster) + Constants.ReservedClusters;
 
             uint bytesPerFat;
             if (_maxClusters < 0xfff0)
@@ -222,71 +232,96 @@ namespace FATX.FileSystem
                 _isFat16 = false;
             }
 
-            _bytesPerFat = (bytesPerFat + (Constants.PageSize - 1)) &
-                ~(Constants.PageSize - 1);
+            _bytesPerFat = (bytesPerFat + (Constants.PageSize - 1)) & ~(Constants.PageSize - 1);
 
             this._fatByteOffset = Constants.ReservedBytes;
             this._fileAreaByteOffset = this._fatByteOffset + this._bytesPerFat;
             this._fileAreaLength = this.Length - this.FileAreaByteOffset;
+
+            Trace.WriteLine($"[Volume] Параметры тома: Clusters: {_maxClusters}, FatOffset: 0x{_fatByteOffset:X}");
         }
 
-        /// <summary>
-        /// Read either the 16 or 32 bit file allocation table.
-        /// </summary>
         private void ReadFileAllocationTable()
         {
-            _fileAllocationTable = new uint[_maxClusters];
-
-            var fatOffset = ByteOffsetToPhysicalOffset(this._fatByteOffset);
-            _reader.Seek(fatOffset);
-            if (this._isFat16)
+            try
             {
-                byte[] _tempFat = new byte[_maxClusters * 2];
-                _reader.Read(_tempFat, (int)(_maxClusters * 2));
-
-                if (_reader.ByteOrder == ByteOrder.Big)
+                // Правило 1: Защита от OutOfMemory при поврежденном MaxClusters
+                if (_maxClusters > int.MaxValue / 4) // Примерная проверка на разумность
                 {
-                    for (int i = 0; i < _maxClusters; i++)
-                    {
-                        Array.Reverse(_tempFat, i * 2, 2);
-                    }
+                    throw new OutOfMemoryException($"Слишком большое количество кластеров ({_maxClusters}), возможно повреждение метаданных.");
                 }
 
-                for (int i = 0; i < _maxClusters; i++)
+                _fileAllocationTable = new uint[_maxClusters];
+
+                var fatOffset = ByteOffsetToPhysicalOffset(this._fatByteOffset);
+                _reader.Seek(fatOffset);
+
+                if (this._isFat16)
                 {
-                    _fileAllocationTable[i] = BitConverter.ToUInt16(_tempFat, i * 2);
+                    byte[] _tempFat = new byte[_maxClusters * 2];
+                    _reader.Read(_tempFat, (int)(_maxClusters * 2));
+
+                    if (_reader.ByteOrder == ByteOrder.Big)
+                    {
+                        for (int i = 0; i < _maxClusters; i++)
+                        {
+                            Array.Reverse(_tempFat, i * 2, 2);
+                        }
+                    }
+
+                    for (int i = 0; i < _maxClusters; i++)
+                    {
+                        _fileAllocationTable[i] = BitConverter.ToUInt16(_tempFat, i * 2);
+                    }
+                }
+                else
+                {
+                    byte[] _tempFat = new byte[_maxClusters * 4];
+                    _reader.Read(_tempFat, (int)(_maxClusters * 4));
+
+                    if (_reader.ByteOrder == ByteOrder.Big)
+                    {
+                        for (int i = 0; i < _maxClusters; i++)
+                        {
+                            Array.Reverse(_tempFat, i * 4, 4);
+                        }
+                    }
+
+                    for (int i = 0; i < _maxClusters; i++)
+                    {
+                        _fileAllocationTable[i] = BitConverter.ToUInt32(_tempFat, i * 4);
+                    }
                 }
             }
-            else
+            catch (OutOfMemoryException ex)
             {
-                byte[] _tempFat = new byte[_maxClusters * 4];
-                _reader.Read(_tempFat, (int)(_maxClusters * 4));
-
-                if (_reader.ByteOrder == ByteOrder.Big)
-                {
-                    for (int i = 0; i < _maxClusters; i++)
-                    {
-                        Array.Reverse(_tempFat, i * 4, 4);
-                    }
-                }
-
-                for (int i = 0; i < _maxClusters; i++)
-                {
-                    _fileAllocationTable[i] = BitConverter.ToUInt32(_tempFat, i * 4);
-                }
+                Trace.WriteLine($"[Volume] Критическая ошибка: {ex.Message}. FAT не загружена.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[Volume] Ошибка чтения FAT таблицы: {ex.Message}");
+                throw;
             }
         }
 
-        /// <summary>
-        /// Read a single directory stream.
-        /// </summary>
-        /// <param name="cluster"></param>
-        /// <returns></returns>
         private List<DirectoryEntry> ReadDirectoryStream(uint cluster)
         {
             List<DirectoryEntry> stream = new List<DirectoryEntry>();
 
-            byte[] data = ReadCluster(cluster);
+            byte[] data;
+
+            try
+            {
+                data = ReadCluster(cluster);
+            }
+            catch (IOException exception)
+            {
+                // Правило 2 и 3: Trace вместо Console
+                Trace.WriteLine($"[Volume] Ошибка чтения: {exception.Message}. Возвращается пустой список для кластера {cluster}.");
+                return stream;
+            }
+
             long clusterOffset = ClusterToPhysicalOffset(cluster);
 
             for (int i = 0; i < 256; i++)
@@ -296,89 +331,91 @@ namespace FATX.FileSystem
                 if (dirent.FileNameLength == Constants.DirentNeverUsed ||
                     dirent.FileNameLength == Constants.DirentNeverUsed2)
                 {
-                    // We are at the last dirent.
                     break;
                 }
 
                 dirent.Offset = clusterOffset + (i * 0x40);
 
                 stream.Add(dirent);
-
             }
 
             return stream;
         }
 
-        /// <summary>
-        /// Iterates dirent's from stream and populates directories with its child
-        /// dirents. 
-        /// </summary>
-        /// <param name="stream"></param>
-        /// <param name="clusterIndex"></param>
         private void PopulateDirentStream(List<DirectoryEntry> stream, uint clusterIndex)
         {
             foreach (DirectoryEntry dirent in stream)
             {
-                dirent.Cluster = clusterIndex;
-                //Console.WriteLine(String.Format("{0}", dirent.FileName));
-
-                if (dirent.IsDirectory() && !dirent.IsDeleted())
+                try
                 {
-                    List<uint> chainMap = GetClusterChain(dirent);
+                    dirent.Cluster = clusterIndex;
 
-                    foreach (uint cluster in chainMap)
+                    if (dirent.IsDirectory() && !dirent.IsDeleted())
                     {
-                        List<DirectoryEntry> direntStream = ReadDirectoryStream(cluster);
+                        List<uint> chainMap = GetClusterChain(dirent);
 
-                        dirent.AddChildren(direntStream);
-
-                        PopulateDirentStream(direntStream, cluster);
+                        foreach (uint cluster in chainMap)
+                        {
+                            List<DirectoryEntry> direntStream = ReadDirectoryStream(cluster);
+                            dirent.AddChildren(direntStream);
+                            PopulateDirentStream(direntStream, cluster);
+                        }
                     }
+                }
+                catch (Exception ex)
+                {
+                    // Правило 1: Продолжаем обход дерева даже если одна директория битая
+                    Trace.WriteLine($"[Volume] Ошибка при обработке содержимого директории '{dirent.FileName}': {ex.Message}");
                 }
             }
         }
 
-        /// <summary>
-        /// Seek to any offset in the file area.
-        /// </summary>
-        /// <param name="offset"></param>
-        /// <param name="origin"></param>
         public void SeekFileArea(long offset, SeekOrigin origin = SeekOrigin.Begin)
         {
-            // TODO: Check for invalid offset
-            offset += FileAreaByteOffset + _partitionOffset;
-            _reader.Seek(offset, origin);
+            try
+            {
+                // TODO: Проверка на недопустимое смещение (реализована частично try-catch ниже)
+                offset += FileAreaByteOffset + _partitionOffset;
+                _reader.Seek(offset, origin);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[Volume] Ошибка смещения (Seek) в области файлов (Offset: {offset}): {ex.Message}");
+                throw;
+            }
         }
 
-        /// <summary>
-        /// Seek to a cluster.
-        /// </summary>
-        /// <param name="cluster"></param>
         public void SeekToCluster(uint cluster)
         {
-            var offset = ClusterToPhysicalOffset(cluster);
-            _reader.Seek(offset);
+            try
+            {
+                var offset = ClusterToPhysicalOffset(cluster);
+                _reader.Seek(offset);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[Volume] Ошибка смещения к кластеру {cluster}: {ex.Message}");
+                throw;
+            }
         }
 
-        /// <summary>
-        /// Reads a cluster and returns the data.
-        /// </summary>
-        /// <param name="cluster"></param>
-        /// <returns></returns>
         public byte[] ReadCluster(uint cluster)
         {
-            var clusterOffset = ClusterToPhysicalOffset(cluster);
-            _reader.Seek(clusterOffset);
-            byte[] clusterData = new byte[_bytesPerCluster];
-            _reader.Read(clusterData, (int)_bytesPerCluster);
-            return clusterData;
+            try
+            {
+                var clusterOffset = ClusterToPhysicalOffset(cluster);
+                _reader.Seek(clusterOffset);
+                byte[] clusterData = new byte[_bytesPerCluster];
+                _reader.Read(clusterData, (int)_bytesPerCluster);
+                return clusterData;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[Volume] Ошибка чтения кластера {cluster}: {ex.Message}");
+                throw;
+            }
         }
 
-        /// <summary>
-        /// Get a cluster chain for a dirent from the file allocation table.
-        /// </summary>
-        /// <param name="dirent">The DirectoryEntry to get the cluster chain for.</param>
-        /// <returns></returns>
         public List<uint> GetClusterChain(DirectoryEntry dirent)
         {
             var firstCluster = dirent.FirstCluster;
@@ -386,7 +423,8 @@ namespace FATX.FileSystem
 
             if (firstCluster == 0 || firstCluster > this.MaxClusters)
             {
-                Console.WriteLine($" {dirent.GetFullPath()}: First cluster is invalid (FirstCluster={firstCluster} MaxClusters={this.MaxClusters})");
+                // Правило 2 и 3: Trace вместо Console, контекст
+                Trace.WriteLine($"[Volume] {dirent.GetFullPath()}: Неверный первый кластер (FirstCluster={firstCluster}, MaxClusters={this.MaxClusters}). Цепочка пуста.");
                 return clusterChain;
             }
 
@@ -399,46 +437,48 @@ namespace FATX.FileSystem
 
             uint fatEntry = firstCluster;
             uint reservedIndexes = (_isFat16) ? Constants.Cluster16Reserved : Constants.ClusterReserved;
-            while (true)
+
+            try
             {
-                fatEntry = _fileAllocationTable[fatEntry];
-                if (fatEntry >= reservedIndexes)
+                while (true)
                 {
-                    break;
-                }
+                    // Защита от выхода за границы массива FAT
+                    if (fatEntry >= _fileAllocationTable.Length)
+                    {
+                        Trace.WriteLine($"[Volume] {dirent.FileName}: FAT цепочка ссылается на индекс {fatEntry} за пределами таблицы (Length: {_fileAllocationTable.Length}). Обрыв цепочки.");
+                        break;
+                    }
 
-                if (fatEntry == 0 || fatEntry > _fileAllocationTable.Length)
-                {
-                    // TODO: Warn user.
-                    Console.WriteLine($"File {dirent.FileName} has a corrupt cluster chain!");
-                    clusterChain = new List<uint>(1);
-                    clusterChain.Add(firstCluster);
-                    return clusterChain;
-                }
+                    fatEntry = _fileAllocationTable[fatEntry];
+                    if (fatEntry >= reservedIndexes)
+                    {
+                        break;
+                    }
 
-                // Get next cluster.
-                clusterChain.Add(fatEntry);
+                    if (fatEntry == 0 || fatEntry > _fileAllocationTable.Length)
+                    {
+                        Trace.WriteLine($"[Volume] Файл {dirent.FileName} имеет поврежденную цепочку кластеров (значение FAT: {fatEntry}).");
+                        clusterChain = new List<uint>(1);
+                        clusterChain.Add(firstCluster);
+                        return clusterChain;
+                    }
+
+                    clusterChain.Add(fatEntry);
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[Volume] Ошибка при обходе цепочки кластеров для {dirent.FileName}: {ex.Message}");
             }
 
             return clusterChain;
         }
 
-        /// <summary>
-        /// Convert a byte offset (relative to the volume) to an offset into the
-        /// image file it belongs to.
-        /// </summary>
-        /// <param name="offset"></param>
-        /// <returns></returns>
         private long ByteOffsetToPhysicalOffset(long offset)
         {
             return this._partitionOffset + offset;
         }
 
-        /// <summary>
-        /// Convert a cluster index to an offset into the image file it belongs to.
-        /// </summary>
-        /// <param name="cluster"></param>
-        /// <returns></returns>
         public long ClusterToPhysicalOffset(uint cluster)
         {
             var physicalOffset = ByteOffsetToPhysicalOffset(FileAreaByteOffset);
@@ -475,8 +515,9 @@ namespace FATX.FileSystem
 
         public long GetUsedSpace()
         {
-            // Count number of used clusters
             long clustersUsed = 0;
+
+            if (_fileAllocationTable == null) return 0;
 
             foreach (var cluster in FileAllocationTable)
             {

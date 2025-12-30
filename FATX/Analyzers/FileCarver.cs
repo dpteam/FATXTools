@@ -1,4 +1,5 @@
-﻿using FATX.Analyzers.Signatures;
+﻿// Переписано
+using FATX.Analyzers.Signatures;
 using FATX.Analyzers.Signatures.Blank;
 using FATX.FileSystem;
 using System;
@@ -6,6 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
+using System.Diagnostics; // 1. Подключаем Trace
 
 namespace FATX.Analyzers
 {
@@ -50,26 +52,35 @@ namespace FATX.Analyzers
 
             foreach (var file in fileCarverList.EnumerateArray())
             {
-                JsonElement offsetElement;
-                if (!file.TryGetProperty("Offset", out offsetElement))
+                try
                 {
-                    Console.WriteLine("Failed to load signature from database: Missing offset field");
-                    continue;
+                    JsonElement offsetElement;
+                    if (!file.TryGetProperty("Offset", out offsetElement))
+                    {
+                        // Правило 2 и 3: Trace.WriteLine с детальным описанием
+                        Trace.WriteLine("[FileCarver] Ошибка загрузки сигнатуры из БД: отсутствует поле 'Offset'");
+                        continue;
+                    }
+
+                    var fileSignature = new BlankSignature(_volume, offsetElement.GetInt64());
+
+                    if (file.TryGetProperty("Name", out var nameElement))
+                    {
+                        fileSignature.FileName = nameElement.GetString();
+                    }
+
+                    if (file.TryGetProperty("Size", out var sizeElement))
+                    {
+                        fileSignature.FileSize = sizeElement.GetInt64();
+                    }
+
+                    _carvedFiles.Add(fileSignature);
                 }
-
-                var fileSignature = new BlankSignature(_volume, offsetElement.GetInt64());
-
-                if (file.TryGetProperty("Name", out var nameElement))
+                catch (Exception ex)
                 {
-                    fileSignature.FileName = nameElement.GetString();
+                    // Правило 1: Отказоустойчивость при чтении одной записи (не ломаем весь цикл)
+                    Trace.WriteLine($"[FileCarver] Исключение при обработке записи из базы данных: {ex.Message}");
                 }
-
-                if (file.TryGetProperty("Size", out var sizeElement))
-                {
-                    fileSignature.FileSize = sizeElement.GetInt64();
-                }
-
-                _carvedFiles.Add(fileSignature);
             }
         }
 
@@ -85,68 +96,96 @@ namespace FATX.Analyzers
 
         public List<FileSignature> Analyze(CancellationToken cancellationToken, IProgress<int> progress)
         {
-            var allSignatures = from assembly in AppDomain.CurrentDomain.GetAssemblies()
-                                from type in assembly.GetTypes()
-                                where type.Namespace == "FATX.Analyzers.Signatures"
-                                where type.IsSubclassOf(typeof(FileSignature))
-                                select type;
-
-            _carvedFiles = new List<FileSignature>();
-            var interval = (long)_interval;
-
-            var types = allSignatures.ToList();
-
-            var origByteOrder = _volume.GetReader().ByteOrder;
-
-            long progressValue = 0;
-            long progressUpdate = interval * 0x200;
-
-            for (long offset = 0; offset < _length; offset += interval)
+            try
             {
-                foreach (Type type in types)
+                var allSignatures = from assembly in AppDomain.CurrentDomain.GetAssemblies()
+                                    from type in assembly.GetTypes()
+                                    where type.Namespace == "FATX.Analyzers.Signatures"
+                                    where type.IsSubclassOf(typeof(FileSignature))
+                                    select type;
+
+                _carvedFiles = new List<FileSignature>();
+                var interval = (long)_interval;
+
+                var types = allSignatures.ToList();
+
+                // Правило 3: Логируем количество найденных сигнатур
+                Trace.WriteLine($"[FileCarver] Загружено {types.Count} типов сигнатур для анализа.");
+
+                // Сохраняем оригинальный порядок байт, чтобы восстанавливать его для каждой новой сигнатуры
+                var origByteOrder = _volume.GetReader().ByteOrder;
+
+                long progressValue = 0;
+                long progressUpdate = interval * 0x200;
+
+                for (long offset = 0; offset < _length; offset += interval)
                 {
-                    // too slow
-                    FileSignature signature = (FileSignature)Activator.CreateInstance(type, _volume, offset);
-
-                    _volume.GetReader().ByteOrder = origByteOrder;
-
-                    _volume.SeekFileArea(offset);
-                    bool test = signature.Test();
-                    if (test)
+                    foreach (Type type in types)
                     {
                         try
                         {
-                            // Make sure that we record the file first
-                            _carvedFiles.Add(signature);
+                            // Создаем экземпляр сигнатуры
+                            FileSignature signature = (FileSignature)Activator.CreateInstance(type, _volume, offset);
 
-                            // Attempt to parse the file
+                            // Восстанавливаем порядок байт тома перед тестом
+                            _volume.GetReader().ByteOrder = origByteOrder;
+
                             _volume.SeekFileArea(offset);
-                            signature.Parse();
-                            Console.WriteLine(string.Format("Found {0} at 0x{1:X}.", signature.GetType().Name, offset));
+                            bool test = signature.Test();
+
+                            if (test)
+                            {
+                                try
+                                {
+                                    // Убеждаемся, что файл записан первым
+                                    _carvedFiles.Add(signature);
+
+                                    // Пытаемся распарсить файл
+                                    _volume.SeekFileArea(offset);
+                                    signature.Parse();
+
+                                    // Правило 2: Trace.WriteLine вместо Console
+                                    // Правило 3: Добавлено имя файла в лог
+                                    Trace.WriteLine($"[FileCarver] Найден {signature.GetType().Name} по адресу 0x{offset:X}. Имя: {signature.FileName}");
+                                }
+                                catch (Exception e)
+                                {
+                                    // Правило 1 и 3: Логируем ошибки парсинга, но продолжаем сканирование
+                                    Trace.WriteLine($"[FileCarver] Ошибка парсинга {signature.GetType().Name} по адресу 0x{offset:X}: {e.Message}");
+                                    // Trace.WriteLine(e.StackTrace); // Можно раскомментировать для детального дебага
+                                }
+                            }
                         }
-                        catch (Exception e)
+                        catch (Exception ex)
                         {
-                            Console.WriteLine(string.Format("Exception thrown for {0} at 0x{1:X}: {2}", signature.GetType().Name, offset, e.Message));
-                            Console.WriteLine(e.StackTrace);
+                            // Правило 1: Важно! Ловим ошибки при создании инстанса (Activator) или в методе Test(),
+                            // чтобы одна "сломанная" сигнатура не останавливала весь цикл.
+                            Trace.WriteLine($"[FileCarver] Критическая ошибка при обработке типа {type.Name} по адресу 0x{offset:X}: {ex.Message}");
                         }
+                    }
+
+                    progressValue += interval;
+
+                    if (progressValue % progressUpdate == 0)
+                        progress?.Report((int)(progressValue / interval));
+
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        Trace.WriteLine("[FileCarver] Анализ отменен пользователем.");
+                        return _carvedFiles;
                     }
                 }
 
-                progressValue += interval;
+                // Заполняем прогресс-бар до конца
+                progress?.Report((int)(_length / interval));
 
-                if (progressValue % progressUpdate == 0)
-                    progress?.Report((int)(progressValue / interval));
-
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return _carvedFiles;
-                }
+                // Правило 2: Финальное сообщение через Trace
+                Trace.WriteLine("[FileCarver] Анализ тома завершен!");
             }
-
-            // Fill up the progress bar
-            progress?.Report((int)(_length / interval));
-
-            Console.WriteLine("Complete!");
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileCarver] Глобальная ошибка в методе Analyze: {ex.Message}");
+            }
 
             return _carvedFiles;
         }

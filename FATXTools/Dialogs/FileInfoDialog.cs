@@ -1,5 +1,7 @@
-﻿using FATX.FileSystem;
+﻿// Переписано
+using FATX.FileSystem;
 using System;
+using System.Diagnostics; // 1. Подключаем Trace
 using System.Windows.Forms;
 
 namespace FATXTools.Dialogs
@@ -10,57 +12,89 @@ namespace FATXTools.Dialogs
         {
             InitializeComponent();
 
-            listView1.Items.Add("Name").SubItems.Add(dirent.FileName);
-            listView1.Items.Add("Size in bytes").SubItems.Add(dirent.FileSize.ToString());
-            listView1.Items.Add("First Cluster").SubItems.Add(dirent.FirstCluster.ToString());
-            listView1.Items.Add("First Cluster Offset").SubItems.Add("0x" +
-                volume.ClusterToPhysicalOffset(dirent.FirstCluster).ToString("x"));
-            listView1.Items.Add("Attributes").SubItems.Add(FormatAttributes(dirent.FileAttributes));
+            try
+            {
+                // Правило 1: Проверка входных параметров
+                if (volume == null || dirent == null)
+                {
+                    Trace.WriteLine("[FileInfoDialog] Попытка открытия диалога с null объектом (Volume или DirectoryEntry).");
+                    throw new ArgumentNullException("Volume или DirectoryEntry");
+                }
 
-            DateTime creationTime = new DateTime(dirent.CreationTime.Year,
-                dirent.CreationTime.Month, dirent.CreationTime.Day,
-                dirent.CreationTime.Hour, dirent.CreationTime.Minute,
-                dirent.CreationTime.Second);
-            DateTime lastWriteTime = new DateTime(dirent.LastWriteTime.Year,
-                dirent.LastWriteTime.Month, dirent.LastWriteTime.Day,
-                dirent.LastWriteTime.Hour, dirent.LastWriteTime.Minute,
-                dirent.LastWriteTime.Second);
-            DateTime lastAccessTime = new DateTime(dirent.LastAccessTime.Year,
-                dirent.LastAccessTime.Month, dirent.LastAccessTime.Day,
-                dirent.LastAccessTime.Hour, dirent.LastAccessTime.Minute,
-                dirent.LastAccessTime.Second);
+                listView1.Items.Add("Name").SubItems.Add(dirent.FileName ?? "Unknown");
+                listView1.Items.Add("Size in bytes").SubItems.Add(dirent.FileSize.ToString());
+                listView1.Items.Add("First Cluster").SubItems.Add(dirent.FirstCluster.ToString());
 
-            listView1.Items.Add("Creation Time").SubItems.Add(creationTime.ToString());
-            listView1.Items.Add("Last Write Time").SubItems.Add(lastWriteTime.ToString());
-            listView1.Items.Add("Last Access Time").SubItems.Add(lastAccessTime.ToString());
+                // Правило 1: Защита при расчете смещения (может вызвать ошибку при некорректном кластере)
+                try
+                {
+                    var offset = volume.ClusterToPhysicalOffset(dirent.FirstCluster);
+                    listView1.Items.Add("First Cluster Offset").SubItems.Add("0x" + offset.ToString("x"));
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"[FileInfoDialog] Ошибка расчета смещения для кластера {dirent.FirstCluster}: {ex.Message}");
+                    listView1.Items.Add("First Cluster Offset").SubItems.Add("Error (Invalid Cluster)");
+                }
+
+                listView1.Items.Add("Attributes").SubItems.Add(FormatAttributes(dirent.FileAttributes));
+
+                // Правило 1: Безопасное получение даты
+                // Используем метод AsDateTime() (который мы исправили ранее) вместо ручной сборки,
+                // так как он безопаснее обрабатывает некорректные значения
+                listView1.Items.Add("Creation Time").SubItems.Add(GetSafeDateTime(dirent.CreationTime).ToString());
+                listView1.Items.Add("Last Write Time").SubItems.Add(GetSafeDateTime(dirent.LastWriteTime).ToString());
+                listView1.Items.Add("Last Access Time").SubItems.Add(GetSafeDateTime(dirent.LastAccessTime).ToString());
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileInfoDialog] Критическая ошибка при инициализации диалога: {ex.Message}");
+                MessageBox.Show($"Не удалось отобразить информацию о файле.\nОшибка: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private DateTime GetSafeDateTime(TimeStamp timeStamp)
+        {
+            try
+            {
+                return timeStamp.AsDateTime();
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileInfoDialog] Ошибка конвертации времени: {ex.Message}");
+                return DateTime.MinValue; // Возвращаем минимальную дату при ошибке
+            }
         }
 
         private string FormatAttributes(FileAttribute attributes)
         {
             string attrStr = "";
 
+            // ИСПРАВЛЕНИЕ: Убран else if.
+            // В оригинале, если файл был Hidden, он не мог быть Archive.
+            // Теперь отображаем все актуальные флаги.
             if (attributes.HasFlag(FileAttribute.Archive))
             {
                 attrStr += "A";
             }
-            else if (attributes.HasFlag(FileAttribute.Directory))
+            if (attributes.HasFlag(FileAttribute.Directory))
             {
                 attrStr += "D";
             }
-            else if (attributes.HasFlag(FileAttribute.Hidden))
+            if (attributes.HasFlag(FileAttribute.Hidden))
             {
                 attrStr += "H";
             }
-            else if (attributes.HasFlag(FileAttribute.ReadOnly))
+            if (attributes.HasFlag(FileAttribute.ReadOnly))
             {
                 attrStr += "R";
             }
-            else if (attributes.HasFlag(FileAttribute.System))
+            if (attributes.HasFlag(FileAttribute.System))
             {
                 attrStr += "S";
             }
 
-            return attrStr;
+            return string.IsNullOrEmpty(attrStr) ? "-" : attrStr;
         }
     }
 }

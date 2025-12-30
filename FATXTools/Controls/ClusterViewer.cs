@@ -1,11 +1,11 @@
-﻿using FATX.Analyzers;
+﻿// Переписано
+using FATX.Analyzers;
 using FATX.FileSystem;
 using System;
-using System.Diagnostics;
+using System.Diagnostics; // 1. Подключаем Trace
 using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
-//using Be.Windows.Forms;
 
 using ClusterColorMap = System.Collections.Generic.Dictionary<uint, System.Drawing.Color>;
 
@@ -32,77 +32,130 @@ namespace FATXTools.Controls
 
         public ClusterViewer(Volume volume, IntegrityAnalyzer integrityAnalyzer)
         {
-            InitializeComponent();
+            try
+            {
+                InitializeComponent();
 
-            this.volume = volume;
-            this.integrityAnalyzer = integrityAnalyzer;
+                this.volume = volume;
+                this.integrityAnalyzer = integrityAnalyzer;
 
-            dataMap = new DataMap((int)volume.MaxClusters);
-            dataMap.Location = new Point(0, 0);
-            dataMap.Dock = DockStyle.Fill;
-            dataMap.CellSelected += DataMap_CellSelected;
-            dataMap.CellHovered += DataMap_CellHovered;
-            dataMap.Increment = (int)volume.BytesPerCluster;
+                if (volume != null)
+                {
+                    dataMap = new DataMap((int)volume.MaxClusters);
+                    dataMap.Location = new Point(0, 0);
+                    dataMap.Dock = DockStyle.Fill;
+                    dataMap.CellSelected += DataMap_CellSelected;
+                    dataMap.CellHovered += DataMap_CellHovered;
+                    dataMap.Increment = (int)volume.BytesPerCluster;
 
-            clusterColorMap = new ClusterColorMap();
+                    clusterColorMap = new ClusterColorMap();
 
-            this.Controls.Add(dataMap);
-            InitializeActiveFileSystem();
-            UpdateDataMap();
+                    this.Controls.Add(dataMap);
+                    InitializeActiveFileSystem();
+                    UpdateDataMap();
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[ClusterViewer] Ошибка инициализации: {ex.Message}");
+            }
         }
 
         public void UpdateClusters()
         {
-            for (uint i = 1; i < volume.MaxClusters; i++)
+            if (volume == null || integrityAnalyzer == null) return;
+
+            try
             {
-                var occupants = integrityAnalyzer.GetClusterOccupants(i);
-
-                clusterColorMap[i] = emptyColor;
-
-                if (occupants == null || occupants.Count == 0)
+                // Правило 1: Защита цикла обновления
+                for (uint i = 1; i < volume.MaxClusters; i++)
                 {
-                    // No occupants
-                    continue;
+                    try
+                    {
+                        var occupants = integrityAnalyzer.GetClusterOccupants(i);
+
+                        // Сброс цвета на белый по умолчанию
+                        if (!clusterColorMap.ContainsKey(i))
+                        {
+                            clusterColorMap[i] = emptyColor;
+                        }
+                        else
+                        {
+                            clusterColorMap[i] = emptyColor;
+                        }
+
+                        if (occupants == null || occupants.Count == 0)
+                        {
+                            // No occupants
+                            continue;
+                        }
+
+                        if (occupants.Count > 1)
+                        {
+                            if (occupants.Any(file => !file.IsDeleted))
+                            {
+                                clusterColorMap[i] = activeColor;
+                            }
+                            else
+                            {
+                                clusterColorMap[i] = collisionColor;
+                            }
+                        }
+                        else
+                        {
+                            // Проверка Count > 0 для безопасности
+                            if (occupants.Count > 0)
+                            {
+                                var occupant = occupants[0];
+                                if (!occupant.IsDeleted)
+                                {
+                                    // Sole occupant
+                                    clusterColorMap[i] = activeColor;
+                                }
+                                else
+                                {
+                                    // Only recovered occupant
+                                    clusterColorMap[i] = recoveredColor;
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Правило 1: Продолжаем отрисовку, если один кластер вызывает ошибку
+                        Trace.WriteLine($"[ClusterViewer] Ошибка обновления кластера {i}: {ex.Message}");
+                    }
                 }
 
-                if (occupants.Count > 1)
+                // Правило 1: Защита от ошибки доступа к ключу словаря для рутового кластера
+                if (volume.RootDirFirstCluster > 0 && volume.RootDirFirstCluster < volume.MaxClusters)
                 {
-                    if (occupants.Any(file => !file.IsDeleted))
-                    {
-                        clusterColorMap[i] = activeColor;
-                    }
-                    else
-                    {
-                        clusterColorMap[i] = collisionColor;
-                    }
+                    clusterColorMap[volume.RootDirFirstCluster] = rootColor;
                 }
-                else
-                {
-                    var occupant = occupants[0];
-                    if (!occupant.IsDeleted)
-                    {
-                        // Sole occupant
-                        clusterColorMap[i] = activeColor;
-                    }
-                    else
-                    {
-                        // Only recovered occupant
-                        clusterColorMap[i] = recoveredColor;
-                    }
-                }
+
+                UpdateDataMap();
             }
-
-            clusterColorMap[this.volume.RootDirFirstCluster] = rootColor;
-
-            UpdateDataMap();
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[ClusterViewer] Критическая ошибка при обновлении карты: {ex.Message}");
+            }
         }
 
         private void InitializeActiveFileSystem()
         {
-            // TODO: See if we can merge this with UpdateClusters
-            clusterColorMap[volume.RootDirFirstCluster] = rootColor;
-
-            UpdateClusters();
+            try
+            {
+                // TODO: See if we can merge this with UpdateClusters
+                if (volume != null && volume.RootDirFirstCluster > 0)
+                {
+                    clusterColorMap[volume.RootDirFirstCluster] = rootColor;
+                }
+                UpdateClusters();
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[ClusterViewer] Ошибка InitActiveFileSystem: {ex.Message}");
+            }
         }
 
         private int ClusterToCellIndex(uint clusterIndex)
@@ -117,128 +170,226 @@ namespace FATXTools.Controls
 
         private void SetCellColor(int cellIndex, Color color)
         {
-            if (cellIndex < 0 || cellIndex > dataMap.CellCount)
-                return;
-
-            dataMap.Cells[cellIndex].Color = color;
+            try
+            {
+                // Правило 1: Проверка границ
+                if (cellIndex >= 0 && cellIndex < dataMap.CellCount)
+                {
+                    // Проверка на null и.ContainsKey
+                    if (dataMap.Cells != null && dataMap.Cells.ContainsKey(cellIndex))
+                    {
+                        dataMap.Cells[cellIndex].Color = color;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[ClusterViewer] Ошибка SetCellColor: {ex.Message}");
+            }
         }
 
         private void UpdateDataMap()
         {
-            foreach (var pair in clusterColorMap)
+            try
             {
-                SetCellColor(ClusterToCellIndex(pair.Key), pair.Value);
+                foreach (var pair in clusterColorMap)
+                {
+                    SetCellColor(ClusterToCellIndex(pair.Key), pair.Value);
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[ClusterViewer] Ошибка UpdateDataMap: {ex.Message}");
             }
         }
 
         private string BuildToolTipMessage(int index, DirectoryEntry dirent, bool deleted)
         {
-            // What kind of data is stored in this cluster?
-            string dataType;
-            if (dirent.IsDirectory())
+            try
             {
-                dataType = "Dirent Stream";
+                // What kind of data is stored in this cluster?
+                string dataType;
+                if (dirent.IsDirectory())
+                {
+                    dataType = "Dirent Stream";
+                }
+                else
+                {
+                    dataType = "File Data";
+                }
+
+                // Правило 1: Безопасное получение даты (AsDateTime может падать)
+                string creationDate = "Unknown";
+                string writeDate = "Unknown";
+                string accessDate = "Unknown";
+
+                try
+                {
+                    creationDate = dirent.CreationTime.AsDateTime().ToString();
+                }
+                catch { }
+
+                try
+                {
+                    writeDate = dirent.LastWriteTime.AsDateTime().ToString();
+                }
+                catch { }
+
+                try
+                {
+                    accessDate = dirent.LastAccessTime.AsDateTime().ToString();
+                }
+                catch { }
+
+                string message = Environment.NewLine +
+                    index.ToString() + "." +
+                    " Type: " + dataType + Environment.NewLine +
+                    " Occupant: " + dirent.FileName + Environment.NewLine +
+                    " File Size: " + dirent.FileSize.ToString("X8") + Environment.NewLine +
+                    " Date Created: " + creationDate + Environment.NewLine +
+                    " Date Written: " + writeDate + Environment.NewLine +
+                    " Date Accessed: " + accessDate + Environment.NewLine +
+                    " Deleted: " + (deleted).ToString() + Environment.NewLine;
+
+                return message;
             }
-            else
+            catch (Exception ex)
             {
-                dataType = "File Data";
+                Trace.WriteLine($"[ClusterViewer] Ошибка BuildToolTip для {dirent.FileName}: {ex.Message}");
+                return "Error reading metadata.";
             }
-
-            string message = Environment.NewLine +
-                index.ToString() + "." +
-                " Type: " + dataType + Environment.NewLine +
-                " Occupant: " + dirent.FileName + Environment.NewLine +
-                " File Size: " + dirent.FileSize.ToString("X8") + Environment.NewLine +
-                " Date Created: " + dirent.CreationTime.AsDateTime() + Environment.NewLine +
-                " Date Written: " + dirent.LastWriteTime.AsDateTime() + Environment.NewLine +
-                " Date Accessed: " + dirent.LastAccessTime.AsDateTime() + Environment.NewLine +
-                " Deleted: " + (deleted).ToString() + Environment.NewLine;
-
-            return message;
         }
 
         private void DataMap_CellHovered(object sender, EventArgs e)
         {
-            var cellHoveredEventArgs = e as CellHoveredEventArgs;
-
-            if (cellHoveredEventArgs != null)
+            try
             {
-                var clusterIndex = CellToClusterIndex(cellHoveredEventArgs.Index);
+                var cellHoveredEventArgs = e as CellHoveredEventArgs;
 
-                Debug.WriteLine($"Cluster Index: {clusterIndex}");
-
-                var occupants = integrityAnalyzer.GetClusterOccupants(clusterIndex);
-
-                string toolTipMessage = "Cluster Index: " + clusterIndex.ToString() + Environment.NewLine;
-                toolTipMessage += "Cluster Address: 0x" + volume.ClusterToPhysicalOffset(clusterIndex).ToString("X");
-
-                if (clusterIndex == volume.RootDirFirstCluster)
+                if (cellHoveredEventArgs != null)
                 {
-                    toolTipMessage += Environment.NewLine + Environment.NewLine;
-                    toolTipMessage += " Type: Root Directory";
-                }
-                else if (occupants == null)
-                {
-                    // TODO: something is off
-                    Debug.WriteLine("Something is wrong.");
-                }
-                else if (occupants.Count > 0)
-                {
-                    toolTipMessage += Environment.NewLine;
+                    var clusterIndex = CellToClusterIndex(cellHoveredEventArgs.Index);
 
-                    int index = 1;
-                    foreach (var occupant in occupants)
+                    // Правило 2: Trace.WriteLine вместо Debug.WriteLine
+                    // Trace.WriteLine($"Cluster Index: {clusterIndex}"); // Логирование ховера отключено для чистоты, можно включить для дебага
+
+                    var occupants = integrityAnalyzer?.GetClusterOccupants(clusterIndex);
+
+                    string toolTipMessage = "Cluster Index: " + clusterIndex.ToString() + Environment.NewLine;
+                    toolTipMessage += "Cluster Address: 0x" + volume.ClusterToPhysicalOffset(clusterIndex).ToString("X") + Environment.NewLine;
+
+                    if (clusterIndex == volume.RootDirFirstCluster)
                     {
-                        toolTipMessage += BuildToolTipMessage(index, occupant.GetDirent(), occupant.IsDeleted);
-                        index++;
+                        toolTipMessage += Environment.NewLine + Environment.NewLine;
+                        toolTipMessage += "Type: Root Directory";
                     }
-                }
+                    else if (occupants == null)
+                    {
+                        // TODO: something is off
+                        Trace.WriteLine("[ClusterViewer] Occupants is null for cluster " + clusterIndex);
+                    }
+                    else if (occupants.Count > 0)
+                    {
+                        toolTipMessage += Environment.NewLine;
 
-                toolTip1.SetToolTip(this.dataMap, toolTipMessage);
+                        int index = 1;
+                        foreach (var occupant in occupants)
+                        {
+                            try
+                            {
+                                var dirent = occupant.GetDirent();
+                                if (dirent != null)
+                                {
+                                    toolTipMessage += BuildToolTipMessage(index, dirent, occupant.IsDeleted);
+                                    index++;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Trace.WriteLine($"[ClusterViewer] Ошибка в цикле occupants (hover): {ex.Message}");
+                            }
+                        }
+                    }
+
+                    toolTip1.SetToolTip(this.dataMap, toolTipMessage);
+                }
+                else
+                {
+                    toolTip1.SetToolTip(this.dataMap, "");
+                }
             }
-            else
+            catch (Exception ex)
             {
-                toolTip1.SetToolTip(this.dataMap, "");
+                Trace.WriteLine($"[ClusterViewer] Ошибка CellHovered: {ex.Message}");
             }
         }
 
         private void DataMap_CellSelected(object sender, EventArgs e)
         {
-            currentSelectedIndex = dataMap.SelectedIndex;
-
-            var clusterIndex = CellToClusterIndex(currentSelectedIndex);
-
-            Debug.WriteLine($"Cluster Index: {clusterIndex}");
-
-            var occupants = integrityAnalyzer.GetClusterOccupants(clusterIndex);
-
-            if (occupants == null)
+            try
             {
-                // Something is wrong
+                currentSelectedIndex = dataMap.SelectedIndex;
+
+                var clusterIndex = CellToClusterIndex(currentSelectedIndex);
+
+                // Правило 2: Trace.WriteLine вместо Debug.WriteLine
+                Trace.WriteLine($"[ClusterViewer] Selected Cluster Index: {clusterIndex}");
+
+                var occupants = integrityAnalyzer?.GetClusterOccupants(clusterIndex);
+
+                if (occupants == null)
+                {
+                    // Something is wrong
+                    Trace.WriteLine("[ClusterViewer] Occupants is null on selection.");
+                    return;
+                }
+
+                if (occupants.Count > 0)
+                {
+                    if (currentSelectedIndex != previousSelectedIndex)
+                    {
+                        previousSelectedIndex = currentSelectedIndex;
+                        currentClusterChainIndex = 0;
+                    }
+
+                    // Правило 1: Защита от выхода за границы массива
+                    if (currentClusterChainIndex >= occupants.Count)
+                    {
+                        currentClusterChainIndex = 0;
+                    }
+
+                    var databaseFile = occupants[currentClusterChainIndex];
+                    if (databaseFile != null)
+                    {
+                        var clusterChain = databaseFile.ClusterChain;
+                        if (clusterChain != null)
+                        {
+                            // TODO: Change highlight color for colliding clusters
+                            foreach (var cluster in clusterChain)
+                            {
+                                try
+                                {
+                                    int cellIdx = ClusterToCellIndex(cluster);
+                                    if (dataMap.Cells.ContainsKey(cellIdx))
+                                    {
+                                        dataMap.Cells[cellIdx].Selected = true;
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Trace.WriteLine($"[ClusterViewer] Ошибка выделения кластера {cluster}: {ex.Message}");
+                                }
+                            }
+                        }
+                    }
+
+                    // Toggle between each occupant after each click
+                    currentClusterChainIndex++;
+                }
             }
-            else if (occupants.Count > 0)
+            catch (Exception ex)
             {
-                if (currentSelectedIndex != previousSelectedIndex)
-                {
-                    previousSelectedIndex = currentSelectedIndex;
-                    currentClusterChainIndex = 0;
-                }
-
-                if (currentClusterChainIndex >= occupants.Count)
-                {
-                    currentClusterChainIndex = 0;
-                }
-
-                var clusterChain = occupants[currentClusterChainIndex].ClusterChain;
-
-                // TODO: Change highlight color for colliding clusters
-                foreach (var cluster in clusterChain)
-                {
-                    dataMap.Cells[ClusterToCellIndex(cluster)].Selected = true;
-                }
-
-                // Toggle between each occupant after each click
-                currentClusterChainIndex++;
+                Trace.WriteLine($"[ClusterViewer] Ошибка CellSelected: {ex.Message}");
             }
         }
     }

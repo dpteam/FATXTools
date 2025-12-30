@@ -1,6 +1,7 @@
-﻿using System;
+﻿// Переписано
+using System;
 using System.Collections.Generic;
-using System.Diagnostics;
+using System.Diagnostics; // 1. Подключаем Trace
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -88,39 +89,54 @@ namespace FATXTools.Controls
 
         private void Initialize(int cellCount)
         {
-            SetStyle(ControlStyles.UserPaint, true);
-            SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
-            SetStyle(ControlStyles.ResizeRedraw, true);
+            try
+            {
+                SetStyle(ControlStyles.UserPaint, true);
+                SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
+                SetStyle(ControlStyles.ResizeRedraw, true);
 
-            CellSize = 20;
+                CellSize = 20;
 
-            // TODO: Make it a property
-            _totalColumns = 32;
-            _totalRows = cellCount / _totalColumns;
+                // TODO: Make it a property
+                _totalColumns = 32;
+                _totalRows = cellCount / _totalColumns;
 
-            vScrollBar = new VScrollBar();
-            vScrollBar.Scroll += VScrollBar_Scroll;
-            vScrollBar.ValueChanged += VScrollBar_ValueChanged;
-            vScrollBar.Visible = true;      // TODO: detect when to make it visible
-            vScrollBar.Minimum = 0;
-            vScrollBar.Maximum = (int)_totalRows;
+                vScrollBar = new VScrollBar();
+                vScrollBar.Scroll += VScrollBar_Scroll;
+                vScrollBar.ValueChanged += VScrollBar_ValueChanged;
+                vScrollBar.Visible = true;      // TODO: detect when to make it visible
+                vScrollBar.Minimum = 0;
+                vScrollBar.Maximum = (int)_totalRows;
 
-            vScrollVisible = true;
+                vScrollVisible = true;
 
-            Controls.Add(vScrollBar);
+                Controls.Add(vScrollBar);
 
-            // This will call InitializeCells
-            CellCount = cellCount;
+                // This will call InitializeCells
+                CellCount = cellCount;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DataMap] Ошибка инициализации контрола: {ex.Message}");
+            }
         }
 
         private void InitializeCells(int cellCount)
         {
-            Cells = new Dictionary<int, DataMapCell>(cellCount);
-
-            for (int i = 0; i < cellCount; i++)
+            try
             {
-                Cells[i] = new DataMapCell();
-                Cells[i].Index = i;
+                Cells = new Dictionary<int, DataMapCell>(cellCount);
+
+                for (int i = 0; i < cellCount; i++)
+                {
+                    Cells[i] = new DataMapCell();
+                    Cells[i].Index = i;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DataMap] Критическая ошибка инициализации ячеек (кол-во: {cellCount}): {ex.Message}");
+                // Если памяти не хватило, Cells будет null, проверяем это в Paint
             }
         }
 
@@ -130,37 +146,46 @@ namespace FATXTools.Controls
 
         protected override void OnResize(EventArgs e)
         {
-            base.OnResize(e);
-
-            // Create main frame
-            _content = ClientRectangle;
-
-            // Create sub frames
-            var charSize = CreateGraphics().MeasureString("0", _font);
-
-            var rowInfoWidth = (int)(charSize.Width * 16);
-            var columnInfoHeight = (int)Math.Ceiling(charSize.Height);
-
-            _rowInfo = new Rectangle(_content.X,
-                _content.Y + columnInfoHeight,
-                rowInfoWidth,
-                _content.Height - columnInfoHeight);
-
-            _columnInfo = new Rectangle(_content.X + rowInfoWidth,
-                _content.Y,
-                (CellSize + 5) * 32,
-                columnInfoHeight);
-
-            _grid = new Rectangle(_content.X + rowInfoWidth,
-                _content.Y + columnInfoHeight,
-                (CellSize + 5) * 32,
-                _content.Height - columnInfoHeight);
-
-            if (vScrollVisible)
+            try
             {
-                vScrollBar.Left = _content.X + _content.Width - vScrollBar.Width;
-                vScrollBar.Top = _content.Y;
-                vScrollBar.Height = _content.Height;
+                base.OnResize(e);
+
+                // Create main frame
+                _content = ClientRectangle;
+
+                // Create sub frames
+                Graphics g = CreateGraphics();
+                var charSize = g.MeasureString("0", _font);
+                g.Dispose();
+
+                var rowInfoWidth = (int)(charSize.Width * 16);
+                var columnInfoHeight = (int)Math.Ceiling(charSize.Height);
+
+                _rowInfo = new Rectangle(_content.X,
+                    _content.Y + columnInfoHeight,
+                    rowInfoWidth,
+                    _content.Height - columnInfoHeight);
+
+                _columnInfo = new Rectangle(_content.X + rowInfoWidth,
+                    _content.Y,
+                    (CellSize + 5) * 32,
+                    columnInfoHeight);
+
+                _grid = new Rectangle(_content.X + rowInfoWidth,
+                    _content.Y + columnInfoHeight,
+                    (CellSize + 5) * 32,
+                    _content.Height - columnInfoHeight);
+
+                if (vScrollVisible)
+                {
+                    vScrollBar.Left = _content.X + _content.Width - vScrollBar.Width;
+                    vScrollBar.Top = _content.Y;
+                    vScrollBar.Height = _content.Height;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DataMap] Ошибка при изменении размера: {ex.Message}");
             }
         }
 
@@ -168,105 +193,138 @@ namespace FATXTools.Controls
         {
             base.OnPaint(e);
 
-            var G = e.Graphics;
-            var cellPad = 5;
+            if (e.Graphics == null || Cells == null) return;
 
-            _visibleRows = (_rowInfo.Height / CellSize + cellPad) + 1;
-            _visibleColumns = _totalColumns;
+            try
+            {
+                var G = e.Graphics;
+                var cellPad = 5;
 
-            _startCell = vScrollPos * _totalColumns;
-            _endCell = _startCell + Math.Min(
-                _visibleRows * _totalColumns,
-                CellCount - _startCell);
+                _visibleRows = (_rowInfo.Height / CellSize + cellPad) + 1;
+                _visibleColumns = _totalColumns;
 
-            _visibleCells = _endCell - _startCell;
+                // Защита от переполнения
+                _startCell = vScrollPos * _totalColumns;
+                _endCell = _startCell + Math.Min(
+                    _visibleRows * _totalColumns,
+                    CellCount - _startCell);
+
+                _visibleCells = _endCell - _startCell;
 
 #if DEBUG
-            G.DrawRectangle(_frameBorderPen, _columnInfo);
-            G.DrawRectangle(_frameBorderPen, _rowInfo);
-            G.DrawRectangle(_frameBorderPen, _grid);
+                G.DrawRectangle(_frameBorderPen, _columnInfo);
+                G.DrawRectangle(_frameBorderPen, _rowInfo);
+                G.DrawRectangle(_frameBorderPen, _grid);
 #endif
 
-            // Draw column info
-            for (int c = 0; c < _visibleColumns; c++)
-            {
-                G.DrawString((c + 1).ToString().PadLeft(2),
-                    _font,
-                    _fontBrush,
-                    _columnInfo.X + (c * (CellSize + cellPad)),
-                    _columnInfo.Y);
-            }
-
-            // Draw row info
-            for (int r = 0; r < _visibleRows; r++)
-            {
-                var offset = (vScrollPos + r) * (Increment * _visibleColumns);
-                var row = (vScrollPos + r) + 1;
-
-                // Draw row number
-                G.DrawString(row.ToString().PadLeft(6),
-                    _font,
-                    _fontBrush,
-                    _rowInfo.X,
-                    _rowInfo.Y + (r * (CellSize + cellPad)) + 5);
-
-                // Draw offset
-                G.DrawString(offset.ToString("X16"),
-                    _font,
-                    _fontBrush,
-                    _rowInfo.X + 60,
-                    _rowInfo.Y + (r * (CellSize + cellPad)) + 5);
-            }
-
-            // Draw cells
-            for (int i = 0; i < _visibleCells; i++)
-            {
-                // Get column and row for current cell
-                int x = (i % (int)_totalColumns);   // column
-                int y = (i / (int)_totalColumns);   // row
-
-                // Calculate coordinates for this cell
-                var xPos = (x * (CellSize + cellPad));
-                var yPos = (y * (CellSize + cellPad));
-
-                var cellIndex = (int)(_startCell + (y * _visibleColumns) + x);
-
-                var rect = new Rectangle(_grid.X + xPos,
-                    _grid.Y + yPos,
-                    CellSize,
-                    CellSize);
-
-                Cells[cellIndex].Rect = rect;
-
-                if (Cells[cellIndex].Selected)
+                // Draw column info
+                for (int c = 0; c < _visibleColumns; c++)
                 {
-                    G.FillRectangle(_highlightBrush,
-                        new Rectangle(
-                            _grid.X + xPos - 4,
-                            _grid.Y + yPos - 4,
-                            CellSize + 9,
-                            CellSize + 9));
+                    G.DrawString((c + 1).ToString().PadLeft(2),
+                        _font,
+                        _fontBrush,
+                        _columnInfo.X + (c * (CellSize + cellPad)),
+                        _columnInfo.Y);
                 }
 
-                // Draw filled rectangle
-                G.FillRectangle(
-                    new SolidBrush(Cells[cellIndex].Color),
-                    rect);
+                // Draw row info
+                for (int r = 0; r < _visibleRows; r++)
+                {
+                    var offset = (vScrollPos + r) * (Increment * _visibleColumns);
+                    var row = (vScrollPos + r) + 1;
 
-                G.DrawRectangle(
-                    _cellBorderPen,
-                    rect);
+                    // Draw row number
+                    G.DrawString(row.ToString().PadLeft(6),
+                        _font,
+                        _fontBrush,
+                        _rowInfo.X,
+                        _rowInfo.Y + (r * (CellSize + cellPad)) + 5);
+
+                    // Draw offset
+                    G.DrawString(offset.ToString("X16"),
+                        _font,
+                        _fontBrush,
+                        _rowInfo.X + 60,
+                        _rowInfo.Y + (r * (CellSize + cellPad)) + 5);
+                }
+
+                // Draw cells
+                for (int i = 0; i < _visibleCells; i++)
+                {
+                    try
+                    {
+                        // Get column and row for current cell
+                        int x = (i % (int)_totalColumns);   // column
+                        int y = (i / (int)_totalColumns);   // row
+
+                        // Calculate coordinates for this cell
+                        var xPos = (x * (CellSize + cellPad));
+                        var yPos = (y * (CellSize + cellPad));
+
+                        var cellIndex = (int)(_startCell + (y * _visibleColumns) + x);
+
+                        var rect = new Rectangle(_grid.X + xPos,
+                            _grid.Y + yPos,
+                            CellSize,
+                            CellSize);
+
+                        // Защита от отсутствия ячейки в словаре
+                        if (Cells.ContainsKey(cellIndex))
+                        {
+                            Cells[cellIndex].Rect = rect;
+
+                            if (Cells[cellIndex].Selected)
+                            {
+                                G.FillRectangle(_highlightBrush,
+                                    new Rectangle(
+                                        _grid.X + xPos - 4,
+                                        _grid.Y + yPos - 4,
+                                        CellSize + 9,
+                                        CellSize + 9));
+                            }
+
+                            // Draw filled rectangle
+                            G.FillRectangle(
+                                new SolidBrush(Cells[cellIndex].Color),
+                                rect);
+
+                            G.DrawRectangle(
+                                _cellBorderPen,
+                                rect);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Правило 1: Не даем одной битой ячейке сломать отрисовку всего контрола
+                        // Логируем только если это не просто отсутствие ключа (что часто при скролле)
+                        Trace.WriteLine($"[DataMap] Ошибка отрисовки ячейки {i}: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DataMap] Критическая ошибка отрисовки: {ex.Message}");
             }
         }
 
         private DataMapCell HitTest(Point p)
         {
-            for (int i = (int)_startCell; i < _endCell; i++)
+            if (Cells == null) return null;
+
+            try
             {
-                if (Cells[i].Rect.Contains(p))
+                for (int i = (int)_startCell; i < _endCell; i++)
                 {
-                    return Cells[i];
+                    // Защита от доступа к несуществующим ключам при скролле
+                    if (Cells.ContainsKey(i) && Cells[i].Rect.Contains(p))
+                    {
+                        return Cells[i];
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DataMap] Ошибка HitTest: {ex.Message}");
             }
 
             return null;
@@ -276,25 +334,36 @@ namespace FATXTools.Controls
         {
             base.OnMouseClick(e);
 
-            if (e.Button == MouseButtons.Left)
+            try
             {
-                var hit = HitTest(e.Location);
-
-                if (hit != null)
+                if (e.Button == MouseButtons.Left)
                 {
-                    SelectedIndex = hit.Index;
+                    var hit = HitTest(e.Location);
 
-                    foreach (var pair in Cells)
+                    if (hit != null)
                     {
-                        pair.Value.Selected = false;
+                        SelectedIndex = hit.Index;
+
+                        foreach (var pair in Cells)
+                        {
+                            try
+                            {
+                                pair.Value.Selected = false;
+                            }
+                            catch { /* Игнорируем ошибки сброса */ }
+                        }
+
+                        hit.Selected = true;
+
+                        CellSelected?.Invoke(this, new EventArgs());
+
+                        Invalidate();
                     }
-
-                    hit.Selected = true;
-
-                    CellSelected?.Invoke(this, new EventArgs());
-
-                    Invalidate();
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DataMap] Ошибка клика мыши: {ex.Message}");
             }
         }
 
@@ -304,44 +373,66 @@ namespace FATXTools.Controls
         {
             base.OnMouseMove(e);
 
-            if (e.Location == _lastMove)
+            try
             {
-                return;
+                if (e.Location == _lastMove)
+                {
+                    return;
+                }
+
+                _lastMove = e.Location;
+
+                var hit = HitTest(e.Location);
+
+                if (hit != null)
+                {
+                    CellHovered?.Invoke(this, new CellHoveredEventArgs(hit.Index));
+                }
+                else
+                {
+                    CellHovered?.Invoke(this, null);
+                }
             }
-
-            _lastMove = e.Location;
-
-            var hit = HitTest(e.Location);
-
-            if (hit != null)
+            catch (Exception ex)
             {
-                CellHovered?.Invoke(this, new CellHoveredEventArgs(hit.Index));
-            }
-            else
-            {
-                CellHovered?.Invoke(this, null);
+                Trace.WriteLine($"[DataMap] Ошибка движения мыши: {ex.Message}");
             }
         }
 
         protected override void OnMouseWheel(MouseEventArgs e)
         {
-            int numberOfRowsToMove = e.Delta * SystemInformation.MouseWheelScrollLines / 120;
+            try
+            {
+                // Защита от огромных значений Delta (нестандартные мыши)
+                int delta = e.Delta;
+                int linesToScroll = SystemInformation.MouseWheelScrollLines;
 
-            Debug.WriteLine($"Number of rows to move: {numberOfRowsToMove}");
+                if (linesToScroll == 0) linesToScroll = 1; // Защита от деления на 0
 
-            vScrollPos -= numberOfRowsToMove;
+                int numberOfRowsToMove = delta * linesToScroll / 120;
 
-            if (vScrollPos > vScrollBar.Maximum)
-                vScrollPos = vScrollBar.Maximum;
+                // Правило 2: Trace.WriteLine вместо Debug.WriteLine
+                Trace.WriteLine($"[DataMap] Скролл мышью. Дельта: {delta}, Смещение строк: {numberOfRowsToMove}");
 
-            if (vScrollPos < vScrollBar.Minimum)
-                vScrollPos = vScrollBar.Minimum;
+                vScrollPos -= numberOfRowsToMove;
 
-            vScrollBar.Value = (int)vScrollPos;
+                // Правило 1: Защита от переполнения типа long/int при скролле
+                if (vScrollPos > vScrollBar.Maximum)
+                    vScrollPos = vScrollBar.Maximum;
 
-            Invalidate();
+                if (vScrollPos < vScrollBar.Minimum)
+                    vScrollPos = vScrollBar.Minimum;
 
-            base.OnMouseWheel(e);
+                vScrollBar.Value = (int)vScrollPos;
+
+                Invalidate();
+
+                base.OnMouseWheel(e);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DataMap] Ошибка колеса мыши: {ex.Message}");
+            }
         }
 
         #endregion
@@ -350,66 +441,80 @@ namespace FATXTools.Controls
 
         private void VScrollBar_Scroll(object sender, ScrollEventArgs e)
         {
-            switch (e.Type)
+            try
             {
-                case ScrollEventType.SmallDecrement:
-                    if (vScrollPos != vScrollBar.Minimum)
-                    {
-                        vScrollPos--;
+                switch (e.Type)
+                {
+                    case ScrollEventType.SmallDecrement:
+                        if (vScrollPos != vScrollBar.Minimum)
+                        {
+                            vScrollPos--;
+                            e.NewValue = (int)vScrollPos;
+                            Invalidate();
+                        }
+                        break;
+                    case ScrollEventType.SmallIncrement:
+                        if (vScrollPos != vScrollBar.Maximum)
+                        {
+                            vScrollPos++;
+                            e.NewValue = (int)vScrollPos;
+                            Invalidate();
+                        }
+                        break;
+                    case ScrollEventType.LargeDecrement:
+                        vScrollPos -= Math.Min(vScrollPos, this._visibleRows - 2);
+                        vScrollBar.Minimum = 0;
+                        vScrollBar.Maximum = (int)_totalRows;
+                        vScrollBar.Value = (int)vScrollPos;
                         e.NewValue = (int)vScrollPos;
                         Invalidate();
-                    }
-                    break;
-                case ScrollEventType.SmallIncrement:
-                    if (vScrollPos != vScrollBar.Maximum)
-                    {
-                        vScrollPos++;
+                        break;
+                    case ScrollEventType.LargeIncrement:
+                        vScrollPos += this._visibleRows - 2;
+                        vScrollBar.Minimum = 0;
+                        vScrollBar.Maximum = (int)_totalRows;
+                        vScrollBar.Value = (int)vScrollPos;
                         e.NewValue = (int)vScrollPos;
                         Invalidate();
-                    }
-                    break;
-                case ScrollEventType.LargeDecrement:
-                    vScrollPos -= Math.Min(vScrollPos, this._visibleRows - 2);
-                    vScrollBar.Minimum = 0;
-                    vScrollBar.Maximum = (int)_totalRows;
-                    vScrollBar.Value = (int)vScrollPos;
-                    e.NewValue = (int)vScrollPos;
-                    Invalidate();
-                    break;
-                case ScrollEventType.LargeIncrement:
-                    vScrollPos += this._visibleRows - 2;
-                    vScrollBar.Minimum = 0;
-                    vScrollBar.Maximum = (int)_totalRows;
-                    vScrollBar.Value = (int)vScrollPos;
-                    e.NewValue = (int)vScrollPos;
-                    Invalidate();
-                    break;
-                case ScrollEventType.ThumbPosition:
-                    vScrollPos = e.NewValue;
-                    vScrollBar.Minimum = 0;
-                    vScrollBar.Maximum = (int)_totalRows;
-                    Invalidate();
-                    break;
-                case ScrollEventType.ThumbTrack:
-                    vScrollPos = e.NewValue;
-                    vScrollBar.Minimum = 0;
-                    vScrollBar.Maximum = (int)_totalRows;
-                    Invalidate();
-                    break;
-                case ScrollEventType.EndScroll:
-                    break;
-                case ScrollEventType.Last:
-                    break;
-                case ScrollEventType.First:
-                    break;
-                default:
-                    throw new NotImplementedException();
+                        break;
+                    case ScrollEventType.ThumbPosition:
+                        vScrollPos = e.NewValue;
+                        vScrollBar.Minimum = 0;
+                        vScrollBar.Maximum = (int)_totalRows;
+                        Invalidate();
+                        break;
+                    case ScrollEventType.ThumbTrack:
+                        vScrollPos = e.NewValue;
+                        vScrollBar.Minimum = 0;
+                        vScrollBar.Maximum = (int)_totalRows;
+                        Invalidate();
+                        break;
+                    case ScrollEventType.EndScroll:
+                        break;
+                    case ScrollEventType.Last:
+                        break;
+                    case ScrollEventType.First:
+                        break;
+                    default:
+                        // Правило 1: Вместо падения (throw) логируем нестандартное событие скролла
+                        Trace.WriteLine($"[DataMap] Нестандартное событие скролла: {e.Type}");
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DataMap] Ошибка скроллера: {ex.Message}");
             }
         }
 
         private void VScrollBar_ValueChanged(object sender, EventArgs e)
         {
-            Debug.WriteLine(vScrollBar.Value);
+            // Правило 2: Trace.WriteLine вместо Debug.WriteLine
+            // Но логируем не каждый тик, чтобы не спамить, или используем Trace.WriteLineIfAvailable
+            if (Trace.Listeners.Count > 0) // Проверка, что слушатели есть
+            {
+                Trace.WriteLine($"[DataMap] Позиция скролла: {vScrollBar.Value}");
+            }
         }
 
         #endregion

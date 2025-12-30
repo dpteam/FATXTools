@@ -57,7 +57,7 @@
             this.toolStripMenuItem1.Name = "toolStripMenuItem1";
             this.toolStripMenuItem1.Size = new System.Drawing.Size(269, 38);
             this.toolStripMenuItem1.Text = "Remove Partition";
-            this.toolStripMenuItem1.Click += ToolStripMenuItem1_Click;
+            this.toolStripMenuItem1.Click += toolStripMenuItem1_Click;
             // 
             // DriveView
             // 

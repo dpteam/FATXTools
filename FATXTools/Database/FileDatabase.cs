@@ -1,5 +1,8 @@
-﻿using FATX.FileSystem;
+﻿// Переписано
+using FATX.FileSystem;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics; // 1. Подключаем Trace
 using System.Linq;
 
 namespace FATXTools.Database
@@ -12,7 +15,7 @@ namespace FATXTools.Database
         Dictionary<long, DatabaseFile> files;
 
         /// <summary>
-        /// List of files at the root of the file system.
+        /// List of files at the root of file system.
         /// </summary>
         List<DatabaseFile> root;
 
@@ -27,13 +30,20 @@ namespace FATXTools.Database
             this.root = new List<DatabaseFile>();
             this.volume = volume;
 
-            MergeActiveFileSystem(volume);
+            try
+            {
+                MergeActiveFileSystem(volume);
+                Trace.WriteLine($"[FileDatabase] База данных инициализирована. Загружено записей: {files.Count}");
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileDatabase] Критическая ошибка при инициализации базы данных: {ex.Message}");
+            }
         }
 
         /// <summary>
         /// Returns the number of files in this database.
         /// </summary>
-        /// <returns>Number of files in this database.</returns>
         public int Count()
         {
             return files.Count;
@@ -47,41 +57,71 @@ namespace FATXTools.Database
         {
             // TODO: Only update affected files
 
-            // Construct a new file system.
-            root = new List<DatabaseFile>();
+            try
+            {
+                // Construct a new file system.
+                root = new List<DatabaseFile>();
 
-            // Link the file system together.
-            LinkFileSystem();
+                // Link file system together.
+                LinkFileSystem();
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileDatabase] Ошибка обновления структуры файловой системы: {ex.Message}");
+            }
         }
 
         public void Reset()
         {
-            this.files = new Dictionary<long, DatabaseFile>();
-
-            MergeActiveFileSystem(this.volume);
+            try
+            {
+                this.files = new Dictionary<long, DatabaseFile>();
+                MergeActiveFileSystem(this.volume);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileDatabase] Ошибка сброса (Reset) базы данных: {ex.Message}");
+            }
         }
 
         private void FindChildren(DatabaseFile parent)
         {
-            var chainMap = parent.ClusterChain;
-            foreach (var child in files)
+            try
             {
-                if (chainMap.Contains(child.Value.Cluster))
-                {
-                    //if (child.Value.HasParent())
-                    //{
-                    //    Console.WriteLine("Warning: {0} already has a parent", child.Value.FileName);
-                    //}
-                    // TODO: Use a HashSet or something..
-                    // Add the file as a child of the parent.
-                    if (!parent.Children.Contains(child.Value))
-                        parent.Children.Add(child.Value);
+                if (parent.ClusterChain == null) return;
 
-                    // TODO: What if this file has multiple parents?
-                    // Assign the parent file for this file.
-                    if (child.Value.GetParent() != parent)
-                        child.Value.SetParent(parent);
+                var chainMap = parent.ClusterChain;
+
+                // Используем ToList() для копирования, если нужно безопасное удаление, но здесь только чтение
+                foreach (var child in files.Values)
+                {
+                    try
+                    {
+                        // Правило 1: Проверка на null перед доступом к Cluster
+                        if (child.Cluster == 0 || !chainMap.Contains(child.Cluster))
+                        {
+                            continue;
+                        }
+
+                        // Add file as a child of the parent.
+                        if (!parent.Children.Contains(child))
+                            parent.Children.Add(child);
+
+                        // Assigns the parent file for this file.
+                        // Если у файла уже есть родитель, мы меняем его (логика FATX может быть сложной)
+                        if (child.GetParent() != parent)
+                            child.SetParent(parent);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Правило 1: Не даем одному "битому" ребенку сломать все родительские связи
+                        Trace.WriteLine($"[FileDatabase] Ошибка связывания ребенка с родителем {parent.FileName}: {ex.Message}");
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileDatabase] Ошибка поиска детей для файла {parent.FileName}: {ex.Message}");
             }
         }
 
@@ -93,25 +133,43 @@ namespace FATXTools.Database
             // Clear all previous links
             foreach (var file in files.Values)
             {
-                file.Children = new List<DatabaseFile>();
-                file.SetParent(null);
+                try
+                {
+                    file.Children = new List<DatabaseFile>();
+                    file.SetParent(null);
+                }
+                catch { /* Игнорируем ошибки сброса */ }
             }
 
             // Link all of the files together
             foreach (var file in files.Values)
             {
-                if (file.IsDirectory())
+                try
                 {
-                    FindChildren(file);
+                    if (file.IsDirectory())
+                    {
+                        FindChildren(file);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"[FileDatabase] Ошибка линковки директории {file.FileName}: {ex.Message}");
                 }
             }
 
             // Gather files at the root
             foreach (var file in files.Values)
             {
-                if (!file.HasParent())
+                try
                 {
-                    root.Add(file);
+                    if (!file.HasParent())
+                    {
+                        root.Add(file);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"[FileDatabase] Ошибка проверки родителя для {file.FileName}: {ex.Message}");
                 }
             }
         }
@@ -122,7 +180,18 @@ namespace FATXTools.Database
         /// <param name="volume">The active file system.</param>
         private void MergeActiveFileSystem(Volume volume)
         {
-            RegisterDirectoryEntries(volume.GetRoot());
+            try
+            {
+                var rootEntries = volume.GetRoot();
+                if (rootEntries != null)
+                {
+                    RegisterDirectoryEntries(rootEntries);
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileDatabase] Критическая ошибка при чтении активной файловой системы: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -131,20 +200,36 @@ namespace FATXTools.Database
         /// <param name="dirents"></param>
         private void RegisterDirectoryEntries(List<DirectoryEntry> dirents)
         {
+            if (dirents == null) return;
+
             foreach (var dirent in dirents)
             {
-                if (dirent.IsDeleted())
+                try
                 {
-                    AddFile(dirent, true);
-                }
-                else
-                {
-                    AddFile(dirent, false);
-
-                    if (dirent.IsDirectory())
+                    if (dirent.IsDeleted())
                     {
-                        RegisterDirectoryEntries(dirent.Children);
+                        AddFile(dirent, true);
                     }
+                    else
+                    {
+                        AddFile(dirent, false);
+
+                        if (dirent.IsDirectory())
+                        {
+                            // Рекурсивный вызов. Если внутри произойдет ошибка, она будет поймана внутри следующего вызова RegisterDirectoryEntries
+                            // или при доступе к Children.
+                            var children = dirent.Children;
+                            if (children != null)
+                            {
+                                RegisterDirectoryEntries(children);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Правило 1: Если одна запись битая, пропускаем её, но не прерываем сканирование директории
+                    Trace.WriteLine($"[FileDatabase] Ошибка регистрации записи (dirent) по адресу 0x{dirent.Offset:X}: {ex.Message}");
                 }
             }
         }
@@ -156,24 +241,56 @@ namespace FATXTools.Database
         /// <returns></returns>
         private List<uint> GenerateArtificialClusterChain(DirectoryEntry dirent)
         {
-            // TODO: Check for zeroed FirstCluster
-
-            if (dirent.IsDirectory())
+            try
             {
+                // Правило 1: Защита от деления на ноль
+                if (this.volume.BytesPerCluster == 0)
+                {
+                    Trace.WriteLine("[FileDatabase] BytesPerCluster равно 0. Невозможно сгенерировать цепочку.");
+                    return new List<uint>();
+                }
+
                 // NOTE: Directories with more than one 256 files would have multiple clusters
-                return new List<uint>() { dirent.FirstCluster };
-            }
-            else
-            {
-                var clusterCount = (int)(((dirent.FileSize + (this.volume.BytesPerCluster - 1)) &
-                         ~(this.volume.BytesPerCluster - 1)) / this.volume.BytesPerCluster);
+                if (dirent.IsDirectory())
+                {
+                    return new List<uint>() { dirent.FirstCluster };
+                }
+                else
+                {
+                    // Правило 1: Защита от огромных размеров, которые вызовут Overflow в Enumerable.Range
+                    // Используем long для промежуточных вычислений
+                    long clusterCountLong = (((long)dirent.FileSize + (this.volume.BytesPerCluster - 1)) &
+                                     ~(this.volume.BytesPerCluster - 1)) / this.volume.BytesPerCluster;
 
-                return Enumerable.Range((int)dirent.FirstCluster, clusterCount).Select(i => (uint)i).ToList();
+                    if (clusterCountLong > int.MaxValue)
+                    {
+                        Trace.WriteLine($"[FileDatabase] Размер файла {dirent.FileName} слишком велик для искусственной цепочки.");
+                        clusterCountLong = int.MaxValue;
+                    }
+
+                    int clusterCount = (int)clusterCountLong;
+
+                    if (clusterCount <= 0) return new List<uint>();
+
+                    // Защита от генерации огромного списка (например, если FirstCluster = 0xFFFFFFFF)
+                    if (dirent.FirstCluster > uint.MaxValue - (uint)clusterCount)
+                    {
+                        Trace.WriteLine($"[FileDatabase] Arithmetic overflow for {dirent.FileName} cluster chain generation.");
+                        return new List<uint> { dirent.FirstCluster };
+                    }
+
+                    return Enumerable.Range((int)dirent.FirstCluster, clusterCount).Select(i => (uint)i).ToList();
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileDatabase] Ошибка генерации искусственной цепочки для {dirent.FileName}: {ex.Message}");
+                return new List<uint>();
             }
         }
 
         /// <summary>
-        /// Get a file by the offset into the file system.
+        /// Get a file by offset into the file system.
         /// </summary>
         /// <param name="offset">File area offset</param>
         /// <returns>DatabaseFile from this database</returns>
@@ -194,9 +311,17 @@ namespace FATXTools.Database
         /// <returns>DatabaseFile from this database</returns>
         public DatabaseFile GetFile(DirectoryEntry dirent)
         {
-            if (files.ContainsKey(dirent.Offset))
+            try
             {
-                return files[dirent.Offset];
+                if (dirent == null) return null;
+                if (files.ContainsKey(dirent.Offset))
+                {
+                    return files[dirent.Offset];
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileDatabase] Ошибка получения файла по DirectoryEntry: {ex.Message}");
             }
 
             return null;
@@ -205,22 +330,34 @@ namespace FATXTools.Database
         /// <summary>
         /// Create and initialize a new DatabaseFile for this DirectoryEntry.
         /// </summary>
-        /// <param name="offset"></param>
-        /// <param name="dirent"></param>
-        /// <param name="deleted"></param>
         private DatabaseFile CreateDatabaseFile(DirectoryEntry dirent, bool deleted)
         {
-            files[dirent.Offset] = new DatabaseFile(dirent, deleted);
-            if (deleted)
+            try
             {
-                files[dirent.Offset].ClusterChain = GenerateArtificialClusterChain(dirent);
-            }
-            else
-            {
-                files[dirent.Offset].ClusterChain = this.volume.GetClusterChain(dirent);
-            }
+                // Сначала создаем запись
+                files[dirent.Offset] = new DatabaseFile(dirent, deleted);
 
-            return files[dirent.Offset];
+                // Затем пытаемся вычислить цепочку
+                if (deleted)
+                {
+                    files[dirent.Offset].ClusterChain = GenerateArtificialClusterChain(dirent);
+                }
+                else
+                {
+                    // Правило 1: Защита от падения при ошибке FAT
+                    files[dirent.Offset].ClusterChain = this.volume.GetClusterChain(dirent);
+                }
+
+                return files[dirent.Offset];
+            }
+            catch (Exception ex)
+            {
+                // Правило 1: Если GetClusterChain упала, мы все равно хотим сохранить файл, но с пустой цепочкой
+                Trace.WriteLine($"[FileDatabase] Ошибка инициализации цепочки для {dirent.FileName} (используем пустую цепочку): {ex.Message}");
+
+                files[dirent.Offset].ClusterChain = new List<uint>();
+                return files[dirent.Offset];
+            }
         }
 
         /// <summary>
@@ -230,37 +367,42 @@ namespace FATXTools.Database
         /// <param name="deleted">Whether or not this file was deleted</param>
         public DatabaseFile AddFile(DirectoryEntry dirent, bool deleted)
         {
-            // Create the file if it was not already added
-            if (!files.ContainsKey(dirent.Offset))
+            try
             {
-                return CreateDatabaseFile(dirent, deleted);
-            }
+                // Create the file if it was not already added
+                if (!files.ContainsKey(dirent.Offset))
+                {
+                    return CreateDatabaseFile(dirent, deleted);
+                }
 
-            return files[dirent.Offset];
+                return files[dirent.Offset];
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileDatabase] Ошибка добавления файла в базу: {ex.Message}");
+                return null;
+            }
         }
 
         /// <summary>
         /// Get all files from this database.
         /// </summary>
-        /// <returns></returns>
         public Dictionary<long, DatabaseFile> GetFiles()
         {
             return files;
         }
 
         /// <summary>
-        /// Get the root files from this database's file system.
+        /// Get root files from this database's file system.
         /// </summary>
-        /// <returns></returns>
         public List<DatabaseFile> GetRootFiles()
         {
             return root;
         }
 
         /// <summary>
-        /// Get the volume associated with this database.
+        /// Get volume associated with this database.
         /// </summary>
-        /// <returns></returns>
         public Volume GetVolume()
         {
             return volume;

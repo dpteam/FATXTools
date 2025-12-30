@@ -1,10 +1,12 @@
-﻿using FATX.Analyzers;
+﻿// Переписано
+using FATX.Analyzers;
 using FATX.FileSystem;
 using FATXTools.Dialogs;
 using FATXTools.Utilities;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics; // 1. Подключаем Trace
 using System.Drawing;
 using System.IO;
 using System.Threading;
@@ -46,37 +48,53 @@ namespace FATXTools.Controls
 
         public FileExplorer(PartitionView parent, TaskRunner taskRunner, Volume volume)
         {
-            InitializeComponent();
+            try
+            {
+                InitializeComponent();
 
-            this.parent = parent;
-            this.taskRunner = taskRunner;
-            this.volume = volume;
+                this.parent = parent;
+                this.taskRunner = taskRunner;
+                this.volume = volume;
 
-            this.listViewItemComparer = new ListViewItemComparer();
-            this.listView1.ListViewItemSorter = this.listViewItemComparer;
+                this.listViewItemComparer = new ListViewItemComparer();
+                this.listView1.ListViewItemSorter = this.listViewItemComparer;
 
-            var rootNode = treeView1.Nodes.Add("Root");
-            rootNode.Tag = new NodeTag(null, NodeType.Root);
+                var rootNode = treeView1.Nodes.Add("Root");
+                rootNode.Tag = new NodeTag(null, NodeType.Root);
 
-            PopulateTreeNodeDirectory(rootNode, volume.GetRoot());
+                PopulateTreeNodeDirectory(rootNode, volume.GetRoot());
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Критическая ошибка инициализации FileExplorer: {ex.Message}");
+            }
         }
 
         private void PopulateTreeNodeDirectory(TreeNode parentNode, List<DirectoryEntry> dirents)
         {
+            if (dirents == null) return;
+
             foreach (var dirent in dirents)
             {
-                if (dirent.IsDirectory())
+                try
                 {
-                    TreeNode node = parentNode.Nodes.Add(dirent.FileName);
-
-                    node.Tag = new NodeTag(dirent, NodeType.Dirent);
-
-                    if (dirent.IsDeleted())
+                    if (dirent.IsDirectory())
                     {
-                        node.ForeColor = Color.FromArgb(100, 100, 100);
-                    }
+                        TreeNode node = parentNode.Nodes.Add(dirent.FileName);
 
-                    PopulateTreeNodeDirectory(node, dirent.Children);
+                        node.Tag = new NodeTag(dirent, NodeType.Dirent);
+
+                        if (dirent.IsDeleted())
+                        {
+                            node.ForeColor = Color.FromArgb(100, 100, 100);
+                        }
+
+                        PopulateTreeNodeDirectory(node, dirent.Children);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"[FileExplorer] Ошибка добавления узла дерева {dirent.FileName}: {ex.Message}");
                 }
             }
         }
@@ -88,7 +106,6 @@ namespace FATXTools.Controls
 
             // Add "up" item
             var upDir = listView1.Items.Add("");
-
             upDir.SubItems.Add("...");
             if (parent != null)
             {
@@ -108,38 +125,55 @@ namespace FATXTools.Controls
 
             List<ListViewItem> items = new List<ListViewItem>();
             int index = 1;
+
             foreach (DirectoryEntry dirent in dirents)
             {
-                ListViewItem item = new ListViewItem(index.ToString());
-                item.Tag = new NodeTag(dirent, NodeType.Dirent);
-
-                item.SubItems.Add(dirent.FileName);
-
-                DateTime creationTime = dirent.CreationTime.AsDateTime();
-                DateTime lastWriteTime = dirent.LastWriteTime.AsDateTime();
-                DateTime lastAccessTime = dirent.LastAccessTime.AsDateTime();
-
-                string sizeStr = "";
-                if (!dirent.IsDirectory())
+                try
                 {
-                    sizeStr = Utility.FormatBytes(dirent.FileSize);
+                    ListViewItem item = new ListViewItem(index.ToString());
+                    item.Tag = new NodeTag(dirent, NodeType.Dirent);
+
+                    item.SubItems.Add(dirent.FileName);
+
+                    // Правило 1: Защита при получении даты
+                    DateTime creationTime = new DateTime();
+                    DateTime lastWriteTime = new DateTime();
+                    DateTime lastAccessTime = new DateTime();
+
+                    try
+                    {
+                        creationTime = dirent.CreationTime.AsDateTime();
+                        lastWriteTime = dirent.LastWriteTime.AsDateTime();
+                        lastAccessTime = dirent.LastAccessTime.AsDateTime();
+                    }
+                    catch { /* Используем MinValue если парсинг упал */ }
+
+                    string sizeStr = "";
+                    if (!dirent.IsDirectory())
+                    {
+                        sizeStr = Utility.FormatBytes(dirent.FileSize);
+                    }
+
+                    item.SubItems.Add(sizeStr);
+                    item.SubItems.Add(creationTime.ToString());
+                    item.SubItems.Add(lastWriteTime.ToString());
+                    item.SubItems.Add(lastAccessTime.ToString());
+                    item.SubItems.Add("0x" + dirent.Offset.ToString("x"));
+                    item.SubItems.Add(dirent.Cluster.ToString());
+
+                    if (dirent.IsDeleted())
+                    {
+                        item.BackColor = deletedColor;
+                    }
+
+                    index++;
+                    items.Add(item);
                 }
-
-                item.SubItems.Add(sizeStr);
-                item.SubItems.Add(creationTime.ToString());
-                item.SubItems.Add(lastWriteTime.ToString());
-                item.SubItems.Add(lastAccessTime.ToString());
-                item.SubItems.Add("0x" + dirent.Offset.ToString("x"));
-                item.SubItems.Add(dirent.Cluster.ToString());
-
-                if (dirent.IsDeleted())
+                catch (Exception ex)
                 {
-                    item.BackColor = deletedColor;
+                    // Правило 1: Одна запись не должна ломать отрисовку списка
+                    Trace.WriteLine($"[FileExplorer] Ошибка добавления файла в список {dirent.FileName}: {ex.Message}");
                 }
-
-                index++;
-
-                items.Add(item);
             }
 
             listView1.Items.AddRange(items.ToArray());
@@ -148,149 +182,191 @@ namespace FATXTools.Controls
 
         private void treeView1_AfterSelect(object sender, TreeViewEventArgs e)
         {
-            NodeTag nodeTag = (NodeTag)e.Node.Tag;
-
-            switch (nodeTag.Type)
+            try
             {
-                case NodeType.Dirent:
-                    DirectoryEntry dirent = nodeTag.Tag as DirectoryEntry;
+                NodeTag nodeTag = (NodeTag)e.Node.Tag;
 
-                    if (dirent.IsDeleted())
-                    {
-                        Console.WriteLine($"Cannot loads contents of a deleted directory: {dirent.FileName}");
-                    }
-                    else
-                    {
-                        PopulateListView(dirent.Children, dirent);
-                    }
+                switch (nodeTag.Type)
+                {
+                    case NodeType.Dirent:
+                        DirectoryEntry dirent = nodeTag.Tag as DirectoryEntry;
 
-                    break;
-                case NodeType.Root:
+                        if (dirent.IsDeleted())
+                        {
+                            // Правило 2: Trace.WriteLine вместо Console
+                            Trace.WriteLine($"[FileExplorer] Попытка загрузки содержимого удаленной директории: {dirent.FileName}");
+                        }
+                        else
+                        {
+                            PopulateListView(dirent.Children, dirent);
+                        }
 
-                    PopulateListView(this.volume.GetRoot(), null);
+                        break;
+                    case NodeType.Root:
 
-                    break;
+                        PopulateListView(this.volume.GetRoot(), null);
+
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка выбора директории: {ex.Message}");
             }
         }
 
         private void listView1_DoubleClick(object sender, EventArgs e)
         {
-            if (listView1.SelectedItems.Count > 1)
+            try
             {
-                return;
+                // Правило 1: Проверка выбранности элементов
+                if (listView1.SelectedItems.Count == 0)
+                {
+                    return;
+                }
+
+                ListViewItem item = listView1.SelectedItems[0];
+                NodeTag nodeTag = (NodeTag)item.Tag;
+
+                switch (nodeTag.Type)
+                {
+                    case NodeType.Dirent:
+                        DirectoryEntry dirent = (DirectoryEntry)nodeTag.Tag;
+
+                        if (!dirent.IsDirectory())
+                        {
+                            return;
+                        }
+
+                        if (dirent.IsDeleted())
+                        {
+                            // Правило 2: Trace.WriteLine вместо Console
+                            Trace.WriteLine($"[FileExplorer] Попытка отображения содержимого удаленной директории: {dirent.FileName}");
+                        }
+                        else
+                        {
+                            PopulateListView(dirent.Children, dirent);
+                        }
+
+                        break;
+
+                    case NodeType.Root:
+                        PopulateListView(this.volume.GetRoot(), null);
+                        break;
+                }
             }
-
-            ListViewItem item = listView1.SelectedItems[0];
-            NodeTag nodeTag = (NodeTag)item.Tag;
-
-            switch (nodeTag.Type)
+            catch (Exception ex)
             {
-                case NodeType.Dirent:
-                    DirectoryEntry dirent = (DirectoryEntry)nodeTag.Tag;
-
-                    if (!dirent.IsDirectory())
-                    {
-                        return;
-                    }
-
-                    if (dirent.IsDeleted())
-                    {
-                        Console.WriteLine($"Cannot display contents of a deleted directory: {dirent.FileName}");
-                    }
-                    else
-                    {
-                        PopulateListView(dirent.Children, dirent);
-                    }
-
-                    break;
-
-                case NodeType.Root:
-                    PopulateListView(this.volume.GetRoot(), null);
-                    break;
+                Trace.WriteLine($"[FileExplorer] Ошибка двойного клика: {ex.Message}");
             }
         }
 
         private async void runMetadataAnalyzerToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            // TODO: Make into a user controlled setting
-            var searchLength = this.volume.FileAreaLength;
-            var searchInterval = this.volume.BytesPerCluster;
+            try
+            {
+                // TODO: Make into a user controlled setting
+                var searchLength = this.volume.FileAreaLength;
+                var searchInterval = this.volume.BytesPerCluster;
 
-            taskRunner.Maximum = searchLength;
-            taskRunner.Interval = searchInterval;
+                taskRunner.Maximum = searchLength;
+                taskRunner.Interval = searchInterval;
 
-            MetadataAnalyzer analyzer = new MetadataAnalyzer(this.volume, searchInterval, searchLength);
-            var numBlocks = searchLength / searchInterval;
-            await taskRunner.RunTaskAsync("Metadata Analyzer",
-                // Task
-                (CancellationToken cancellationToken, IProgress<int> progress) =>
-                {
-                    analyzer.Analyze(cancellationToken, progress);
-                },
-                // Progress Update
-                (int progress) =>
-                {
-                    //var progress = analyzer.GetProgress();
-                    taskRunner.UpdateLabel($"Processing cluster {progress}/{numBlocks}");
-                    taskRunner.UpdateProgress(progress);
-                },
-                // On Task Completion
-                () =>
-                {
-                    OnMetadataAnalyzerCompleted?.Invoke(this, new MetadataAnalyzerResults()
+                MetadataAnalyzer analyzer = new MetadataAnalyzer(this.volume, searchInterval, searchLength);
+                var numBlocks = searchLength / searchInterval;
+
+                Trace.WriteLine($"[FileExplorer] Запуск анализатора метаданных...");
+
+                await taskRunner.RunTaskAsync("Metadata Analyzer",
+                    // Task
+                    (CancellationToken cancellationToken, IProgress<int> progress) =>
                     {
-                        analyzer = analyzer
+                        analyzer.Analyze(cancellationToken, progress);
+                    },
+                    // Progress Update
+                    (int progress) =>
+                    {
+                        taskRunner.UpdateLabel($"Processing cluster {progress}/{numBlocks}");
+                        taskRunner.UpdateProgress(progress);
+                    },
+                    // On Task Completion
+                    () =>
+                    {
+                        OnMetadataAnalyzerCompleted?.Invoke(this, new MetadataAnalyzerResults()
+                        {
+                            analyzer = analyzer
+                        });
                     });
-                });
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка запуска анализатора метаданных: {ex.Message}");
+            }
         }
 
         private async void runFileCarverToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            // TODO: Make into a user controlled setting
-            var searchLength = this.volume.FileAreaLength;
-            var searchInterval = Properties.Settings.Default.FileCarverInterval;
+            try
+            {
+                // TODO: Make into a user controlled setting
+                var searchLength = this.volume.FileAreaLength;
+                var searchInterval = Properties.Settings.Default.FileCarverInterval;
 
-            taskRunner.Maximum = searchLength;
-            taskRunner.Interval = (long)searchInterval;
+                taskRunner.Maximum = searchLength;
+                taskRunner.Interval = (long)searchInterval;
 
-            FileCarver carver = new FileCarver(this.volume, searchInterval, searchLength);
-            var numBlocks = searchLength / (long)searchInterval;
-            await taskRunner.RunTaskAsync("File Carver",
-                // Task
-                (CancellationToken cancellationToken, IProgress<int> progress) =>
-                {
-                    carver.Analyze(cancellationToken, progress);
-                },
-                // Progress Update
-                (int progress) =>
-                {
-                    //var progress = carver.GetProgress();
-                    taskRunner.UpdateLabel($"Processing block {progress}/{numBlocks}");
-                    taskRunner.UpdateProgress(progress);
-                },
-                // On Task Completion
-                () =>
-                {
-                    OnFileCarverCompleted?.Invoke(this, new FileCarverResults()
+                FileCarver carver = new FileCarver(this.volume, searchInterval, searchLength);
+                var numBlocks = searchLength / (long)searchInterval;
+
+                Trace.WriteLine($"[FileExplorer] Запуск FileCarver...");
+
+                await taskRunner.RunTaskAsync("File Carver",
+                    // Task
+                    (CancellationToken cancellationToken, IProgress<int> progress) =>
                     {
-                        carver = carver
+                        carver.Analyze(cancellationToken, progress);
+                    },
+                    // Progress Update
+                    (int progress) =>
+                    {
+                        taskRunner.UpdateLabel($"Processing block {progress}/{numBlocks}");
+                        taskRunner.UpdateProgress(progress);
+                    },
+                    // On Task Completion
+                    () =>
+                    {
+                        OnFileCarverCompleted?.Invoke(this, new FileCarverResults()
+                        {
+                            carver = carver
+                        });
                     });
-                });
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка запуска FileCarver: {ex.Message}");
+            }
         }
 
         private void SaveNodeTag(string path, NodeTag nodeTag)
         {
-            switch (nodeTag.Type)
+            try
             {
-                case NodeType.Dirent:
-                    DirectoryEntry dirent = nodeTag.Tag as DirectoryEntry;
+                switch (nodeTag.Type)
+                {
+                    case NodeType.Dirent:
+                        DirectoryEntry dirent = nodeTag.Tag as DirectoryEntry;
 
-                    RunSaveDirectoryEntryTaskAsync(path, dirent);
+                        RunSaveDirectoryEntryTaskAsync(path, dirent);
 
-                    break;
-                case NodeType.Root:
-                    RunSaveAllTaskAsync(path, volume.GetRoot());
-                    break;
+                        break;
+                    case NodeType.Root:
+                        RunSaveAllTaskAsync(path, volume.GetRoot());
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка SaveNodeTag: {ex.Message}");
             }
         }
 
@@ -305,29 +381,36 @@ namespace FATXTools.Controls
 
         private void listSaveSelectedToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            if (listView1.SelectedItems.Count == 0)
-                return;
-
-            FolderBrowserDialog dialog = new FolderBrowserDialog();
-            if (dialog.ShowDialog() == DialogResult.OK)
+            try
             {
-                List<DirectoryEntry> selectedFiles = new List<DirectoryEntry>();
+                if (listView1.SelectedItems.Count == 0)
+                    return;
 
-                foreach (ListViewItem selected in listView1.SelectedItems)
+                FolderBrowserDialog dialog = new FolderBrowserDialog();
+                if (dialog.ShowDialog() == DialogResult.OK)
                 {
-                    NodeTag nodeTag = (NodeTag)selected.Tag;
-                    switch (nodeTag.Type)
+                    List<DirectoryEntry> selectedFiles = new List<DirectoryEntry>();
+
+                    foreach (ListViewItem selected in listView1.SelectedItems)
                     {
-                        case NodeType.Dirent:
-                            DirectoryEntry dirent = nodeTag.Tag as DirectoryEntry;
+                        NodeTag nodeTag = (NodeTag)selected.Tag;
+                        switch (nodeTag.Type)
+                        {
+                            case NodeType.Dirent:
+                                DirectoryEntry dirent = nodeTag.Tag as DirectoryEntry;
 
-                            selectedFiles.Add(dirent);
+                                selectedFiles.Add(dirent);
 
-                            break;
+                                break;
+                        }
                     }
-                }
 
-                RunSaveAllTaskAsync(dialog.SelectedPath, selectedFiles);
+                    RunSaveAllTaskAsync(dialog.SelectedPath, selectedFiles);
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка сохранения выделенного: {ex.Message}");
             }
         }
 
@@ -353,7 +436,7 @@ namespace FATXTools.Controls
                 },
                 () =>
                 {
-                    Console.WriteLine("Finished saving files.");
+                    Trace.WriteLine("[FileExplorer] Сохранение директории завершено.");
                 });
         }
 
@@ -378,7 +461,7 @@ namespace FATXTools.Controls
                 },
                 () =>
                 {
-                    Console.WriteLine("Finished saving files.");
+                    Trace.WriteLine("[FileExplorer] Сохранение всех файлов завершено.");
                 });
         }
 
@@ -402,20 +485,27 @@ namespace FATXTools.Controls
 
         private void viewInformationToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            if (listView1.SelectedItems.Count == 0)
-                return;
-
-            NodeTag nodeTag = (NodeTag)listView1.SelectedItems[0].Tag;
-
-            switch (nodeTag.Type)
+            try
             {
-                case NodeType.Dirent:
-                    DirectoryEntry dirent = (DirectoryEntry)nodeTag.Tag;
+                if (listView1.SelectedItems.Count == 0)
+                    return;
 
-                    FileInfoDialog dialog = new FileInfoDialog(this.volume, dirent);
-                    dialog.ShowDialog();
+                NodeTag nodeTag = (NodeTag)listView1.SelectedItems[0].Tag;
 
-                    break;
+                switch (nodeTag.Type)
+                {
+                    case NodeType.Dirent:
+                        DirectoryEntry dirent = (DirectoryEntry)nodeTag.Tag;
+
+                        FileInfoDialog dialog = new FileInfoDialog(this.volume, dirent);
+                        dialog.ShowDialog();
+
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка просмотра информации: {ex.Message}");
             }
         }
 
@@ -444,15 +534,13 @@ namespace FATXTools.Controls
 
             public string GetCurrentFile()
             {
-                // I am considering returning a DirectoryEntry instead to show
-                // more information about the current file.
                 return currentFile;
             }
 
             private DialogResult ShowIOErrorDialog(Exception e)
             {
-                return MessageBox.Show($"{e.Message}",
-                    "Error", MessageBoxButtons.RetryCancel, MessageBoxIcon.Error);
+                Trace.WriteLine($"[SaveContentTask] Ошибка IO: {e.Message}");
+                return MessageBox.Show($"Не удалось записать файл: {e.Message}\n\nПовторить?", "Ошибка записи", MessageBoxButtons.RetryCancel, MessageBoxIcon.Error);
             }
 
             private void WriteFile(string path, DirectoryEntry dirent, List<uint> chainMap)
@@ -463,62 +551,108 @@ namespace FATXTools.Controls
 
                     foreach (uint cluster in chainMap)
                     {
-                        byte[] clusterData = this.volume.ReadCluster(cluster);
+                        byte[] clusterData = null;
+
+                        try
+                        {
+                            clusterData = this.volume.ReadCluster(cluster);
+                        }
+                        catch (IOException exception)
+                        {
+                            // Failed to read cluster, write null bytes instead.
+                            var position = outFile.Position;
+                            // Правило 2: Trace.WriteLine вместо Console
+                            Trace.WriteLine($"[SaveContentTask] {exception.Message}");
+                            Trace.WriteLine($"[SaveContentTask] Из-за исключения, записан пустой кластер в файл: {path} (Offset: {position})");
+                            clusterData = new byte[volume.BytesPerCluster];
+                        }
 
                         var writeSize = Math.Min(bytesLeft, this.volume.BytesPerCluster);
-                        outFile.Write(clusterData, 0, (int)writeSize);
+
+                        if (clusterData != null)
+                        {
+                            outFile.Write(clusterData, 0, (int)writeSize);
+                        }
 
                         bytesLeft -= writeSize;
                     }
                 }
             }
+
             private void FileSetTimeStamps(string path, DirectoryEntry dirent)
             {
-                File.SetCreationTime(path, dirent.CreationTime.AsDateTime());
-                File.SetLastWriteTime(path, dirent.LastWriteTime.AsDateTime());
-                File.SetLastAccessTime(path, dirent.LastAccessTime.AsDateTime());
+                try
+                {
+                    File.SetCreationTime(path, dirent.CreationTime.AsDateTime());
+                    File.SetLastWriteTime(path, dirent.LastWriteTime.AsDateTime());
+                    File.SetLastAccessTime(path, dirent.LastAccessTime.AsDateTime());
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"[SaveContentTask] Ошибка установки временных меток для {path}: {ex.Message}");
+                }
             }
 
             private void DirectorySetTimestamps(string path, DirectoryEntry dirent)
             {
-                Directory.SetCreationTime(path, dirent.CreationTime.AsDateTime());
-                Directory.SetLastWriteTime(path, dirent.LastWriteTime.AsDateTime());
-                Directory.SetLastAccessTime(path, dirent.LastAccessTime.AsDateTime());
+                try
+                {
+                    Directory.SetCreationTime(path, dirent.CreationTime.AsDateTime());
+                    Directory.SetLastWriteTime(path, dirent.LastWriteTime.AsDateTime());
+                    Directory.SetLastAccessTime(path, dirent.LastAccessTime.AsDateTime());
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"[SaveContentTask] Ошибка установки меток директории для {path}: {ex.Message}");
+                }
             }
 
             private void TryIOOperation(Action action)
             {
-                try
+                int retries = 0;
+                while (true)
                 {
-                    action();
-                }
-                catch (IOException e)
-                {
-                    while (true)
+                    var dialogResult = DialogResult.Retry;
+                    try
                     {
-                        var dialogResult = ShowIOErrorDialog(e);
+                        action();
+                        return; // Success
+                    }
+                    catch (IOException e)
+                    {
+                        dialogResult = ShowIOErrorDialog(e);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Другие исключения не ретраим
+                        Trace.WriteLine($"[SaveContentTask] Критическая ошибка (не IO): {ex.Message}");
+                        throw;
+                    }
 
-                        if (dialogResult == DialogResult.Retry)
+                    if (dialogResult == DialogResult.Retry)
+                    {
+                        retries++;
+                        if (retries > 3)
                         {
-                            try
-                            {
-                                action();
-                            }
-                            catch (Exception)
-                            {
-                                continue;
-                            }
+                            Trace.WriteLine("[SaveContentTask] Превышен лимит попыток записи.");
+                            throw new IOException("Превышен лимит попыток записи.");
                         }
-
-                        break;
+                    }
+                    else if (dialogResult == DialogResult.Cancel)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        throw new OperationCanceledException("Пользователь отменил сохранение.");
                     }
                 }
             }
 
             private void SaveFile(string path, DirectoryEntry dirent)
             {
-                path = path + "\\" + dirent.FileName;
-                Console.WriteLine(path);
+                // Правило 1: Безопасная склейка путей
+                string safePath = Path.Combine(path, dirent.FileName);
+
+                Console.WriteLine(safePath); // Оригинал
+                Trace.WriteLine($"[SaveContentTask] Сохранение файла: {safePath}");
 
                 // Report where we are at
                 currentFile = dirent.FileName;
@@ -528,9 +662,8 @@ namespace FATXTools.Controls
 
                 TryIOOperation(() =>
                 {
-                    WriteFile(path, dirent, chainMap);
-
-                    FileSetTimeStamps(path, dirent);
+                    WriteFile(safePath, dirent, chainMap);
+                    FileSetTimeStamps(safePath, dirent);
                 });
 
                 if (cancellationToken.IsCancellationRequested)
@@ -541,23 +674,27 @@ namespace FATXTools.Controls
 
             private void SaveDirectory(string path, DirectoryEntry dirent)
             {
-                path = path + "\\" + dirent.FileName;
-                Console.WriteLine(path);
+                string safePath = Path.Combine(path, dirent.FileName);
+
+                Console.WriteLine(safePath);
+                Trace.WriteLine($"[SaveContentTask] Сохранение директории: {safePath}");
 
                 // Report where we are at
                 currentFile = dirent.FileName;
                 progress.Report(numSaved++);
 
-                Directory.CreateDirectory(path);
+                Directory.CreateDirectory(path); // Создаем родительскую папку
+
+                string childPath = safePath; // Передаем путь текущей папки как родитель
 
                 foreach (DirectoryEntry child in dirent.Children)
                 {
-                    SaveDirectoryEntry(path, child);
+                    SaveDirectoryEntry(childPath, child);
                 }
 
                 TryIOOperation(() =>
                 {
-                    DirectorySetTimestamps(path, dirent);
+                    DirectorySetTimestamps(safePath, dirent);
                 });
 
                 if (cancellationToken.IsCancellationRequested)
@@ -568,28 +705,35 @@ namespace FATXTools.Controls
 
             private void SaveDeleted(string path, DirectoryEntry dirent)
             {
-                path = path + "\\" + dirent.FileName;
+                string safePath = Path.Combine(path, dirent.FileName);
 
                 currentFile = dirent.GetFullPath();
 
-                Console.WriteLine($"{path}: Cannot save deleted files.");
+                Trace.WriteLine($"[SaveContentTask] {safePath}: Не удалось сохранить удаленные файлы.");
             }
 
             private void SaveDirectoryEntry(string path, DirectoryEntry dirent)
             {
-                if (dirent.IsDeleted())
+                try
                 {
-                    SaveDeleted(path, dirent);
-                    return;
-                }
+                    if (dirent.IsDeleted())
+                    {
+                        SaveDeleted(path, dirent);
+                        return;
+                    }
 
-                if (dirent.IsDirectory())
-                {
-                    SaveDirectory(path, dirent);
+                    if (dirent.IsDirectory())
+                    {
+                        SaveDirectory(path, dirent);
+                    }
+                    else
+                    {
+                        SaveFile(path, dirent);
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    SaveFile(path, dirent);
+                    Trace.WriteLine($"[SaveContentTask] Ошибка в SaveDirectoryEntry ({dirent.FileName}): {ex.Message}");
                 }
             }
 
@@ -609,18 +753,25 @@ namespace FATXTools.Controls
 
         private void listView1_ColumnClick(object sender, ColumnClickEventArgs e)
         {
-            listViewItemComparer.Column = (ColumnIndex)e.Column;
-
-            if (listViewItemComparer.Order == SortOrder.Ascending)
+            try
             {
-                listViewItemComparer.Order = SortOrder.Descending;
-            }
-            else
-            {
-                listViewItemComparer.Order = SortOrder.Ascending;
-            }
+                listViewItemComparer.Column = (ColumnIndex)e.Column;
 
-            listView1.Sort();
+                if (listViewItemComparer.Order == SortOrder.Ascending)
+                {
+                    listViewItemComparer.Order = SortOrder.Descending;
+                }
+                else
+                {
+                    listViewItemComparer.Order = SortOrder.Ascending;
+                }
+
+                listView1.Sort();
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка сортировки колонки: {ex.Message}");
+            }
         }
 
         public enum ColumnIndex
@@ -671,40 +822,71 @@ namespace FATXTools.Controls
                 ListViewItem itemX = (ListViewItem)x;
                 ListViewItem itemY = (ListViewItem)y;
 
-                if (itemX.Tag == null ||
-                    itemY.Tag == null)
+                // Правило 1: Проверка на null тегов
+                if (itemX?.Tag == null || itemY?.Tag == null)
                 {
                     return result;
                 }
 
-                if (itemX.Index == 0)
+                // Skip "up" item (Index == 0 is handled by string parsing logic below implicitly if needed, 
+                // but checking Tag type is safer)
+                NodeTag tagX = (NodeTag)itemX.Tag;
+                NodeTag tagY = (NodeTag)itemY.Tag;
+
+                if (tagX.Type != NodeType.Dirent || tagY.Type != NodeType.Dirent)
                 {
-                    // Skip "up" item
                     return result;
                 }
 
-                DirectoryEntry direntX = (DirectoryEntry)((NodeTag)itemX.Tag).Tag;
-                DirectoryEntry direntY = (DirectoryEntry)((NodeTag)itemY.Tag).Tag;
+                DirectoryEntry direntX = (DirectoryEntry)tagX.Tag;
+                DirectoryEntry direntY = (DirectoryEntry)tagY.Tag;
+
+                if (direntX == null || direntY == null) return result;
 
                 switch (column)
                 {
                     case ColumnIndex.Index:
-                        result = UInt32.Parse(itemX.Text).CompareTo(UInt32.Parse(itemY.Text));
+                        // Безопасный парсинг
+                        uint valX = 0, valY = 0;
+                        if (uint.TryParse(itemX.Text, out valX) && uint.TryParse(itemY.Text, out valY))
+                            result = valX.CompareTo(valY);
                         break;
                     case ColumnIndex.Name:
-                        result = String.Compare(direntX.FileName, direntY.FileName);
+                        result = string.Compare(direntX.FileName, direntY.FileName);
                         break;
                     case ColumnIndex.Size:
                         result = direntX.FileSize.CompareTo(direntY.FileSize);
                         break;
                     case ColumnIndex.Created:
-                        result = direntX.CreationTime.AsDateTime().CompareTo(direntY.CreationTime.AsDateTime());
+                        // Правило 1: Защита при сортировке по дате
+                        try
+                        {
+                            result = direntX.CreationTime.AsDateTime().CompareTo(direntY.CreationTime.AsDateTime());
+                        }
+                        catch (Exception)
+                        {
+                            result = 0;
+                        }
                         break;
                     case ColumnIndex.Modified:
-                        result = direntX.LastWriteTime.AsDateTime().CompareTo(direntY.LastWriteTime.AsDateTime());
+                        try
+                        {
+                            result = direntX.LastWriteTime.AsDateTime().CompareTo(direntY.LastWriteTime.AsDateTime());
+                        }
+                        catch (Exception)
+                        {
+                            result = 0;
+                        }
                         break;
                     case ColumnIndex.Accessed:
-                        result = direntX.LastAccessTime.AsDateTime().CompareTo(direntY.LastAccessTime.AsDateTime());
+                        try
+                        {
+                            result = direntX.LastAccessTime.AsDateTime().CompareTo(direntY.LastAccessTime.AsDateTime());
+                        }
+                        catch (Exception)
+                        {
+                            result = 0;
+                        }
                         break;
                     case ColumnIndex.Offset:
                         result = direntX.Offset.CompareTo(direntY.Offset);

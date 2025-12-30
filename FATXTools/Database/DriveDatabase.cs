@@ -1,9 +1,11 @@
-﻿using FATX;
-using FATX.FileSystem;
+﻿// Переписано
 using System;
 using System.Collections.Generic;
+using System.Diagnostics; // 1. Подключаем Trace
 using System.IO;
 using System.Text.Json;
+using FATX;
+using FATX.FileSystem;
 
 namespace FATXTools.Database
 {
@@ -26,103 +28,203 @@ namespace FATXTools.Database
 
         public PartitionDatabase AddPartition(Volume volume)
         {
-            var partitionDatabase = new PartitionDatabase(volume);
-            partitionDatabases.Add(partitionDatabase);
-            return partitionDatabase;
+            try
+            {
+                var partitionDatabase = new PartitionDatabase(volume);
+                partitionDatabases.Add(partitionDatabase);
+                return partitionDatabase;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveDatabase] Ошибка добавления раздела в базу: {ex.Message}");
+                return null;
+            }
         }
 
         public void RemovePartition(int index)
         {
-            partitionDatabases.RemoveAt(index);
-
-            OnPartitionRemoved?.Invoke(this, new RemovePartitionEventArgs(index));
+            try
+            {
+                if (index >= 0 && index < partitionDatabases.Count)
+                {
+                    partitionDatabases.RemoveAt(index);
+                    OnPartitionRemoved?.Invoke(this, new RemovePartitionEventArgs(index));
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveDatabase] Ошибка удаления раздела по индексу {index}: {ex.Message}");
+            }
         }
 
         public void Save(string path)
         {
-            Dictionary<string, object> databaseObject = new Dictionary<string, object>();
-
-            databaseObject["Version"] = 1;
-            databaseObject["Drive"] = new Dictionary<string, object>();
-
-            var driveObject = databaseObject["Drive"] as Dictionary<string, object>;
-            driveObject["FileName"] = driveName;
-
-            driveObject["Partitions"] = new List<Dictionary<string, object>>();
-            var partitionList = driveObject["Partitions"] as List<Dictionary<string, object>>;
-
-            foreach (var partitionDatabase in partitionDatabases)
+            try
             {
-                var partitionObject = new Dictionary<string, object>();
-                partitionList.Add(partitionObject);
-                partitionDatabase.Save(partitionObject);
+                Trace.WriteLine($"[DriveDatabase] Сохранение базы данных в файл: {path}");
+
+                Dictionary<string, object> databaseObject = new Dictionary<string, object>();
+
+                databaseObject["Version"] = 1;
+                databaseObject["Drive"] = new Dictionary<string, object>();
+
+                var driveObject = databaseObject["Drive"] as Dictionary<string, object>;
+                driveObject["FileName"] = driveName;
+
+                driveObject["Partitions"] = new List<Dictionary<string, object>>();
+                var partitionList = driveObject["Partitions"] as List<Dictionary<string, object>>;
+
+                foreach (var partitionDatabase in partitionDatabases)
+                {
+                    var partitionObject = new Dictionary<string, object>();
+                    partitionList.Add(partitionObject);
+                    partitionDatabase.Save(partitionObject);
+                }
+
+                JsonSerializerOptions jsonSerializerOptions = new JsonSerializerOptions()
+                {
+                    WriteIndented = true,
+                };
+
+                string json = JsonSerializer.Serialize(databaseObject, jsonSerializerOptions);
+
+                File.WriteAllText(path, json);
+
+                Trace.WriteLine("[DriveDatabase] База данных успешно сохранена.");
             }
-
-            JsonSerializerOptions jsonSerializerOptions = new JsonSerializerOptions()
+            catch (Exception ex)
             {
-                WriteIndented = true,
-            };
-
-            string json = JsonSerializer.Serialize(databaseObject, jsonSerializerOptions);
-
-            File.WriteAllText(path, json);
+                Trace.WriteLine($"[DriveDatabase] Критическая ошибка при сохранении базы данных: {ex.Message}");
+                throw; // Пробрасываем, так как пользователь должен знать, что сохранение не удалось
+            }
         }
 
         private bool LoadIfNotExists(JsonElement partitionElement)
         {
-            foreach (var partitionDatabase in partitionDatabases)
+            try
             {
-                if (partitionDatabase.Volume.Offset == partitionElement.GetProperty("Offset").GetInt64())
+                foreach (var partitionDatabase in partitionDatabases)
                 {
-                    partitionDatabase.LoadFromJson(partitionElement);
+                    // Правило 1: Защита доступа к Volume
+                    if (partitionDatabase?.Volume == null) continue;
 
-                    return true;
+                    // Используем безопасное чтение JSON свойства
+                    if (partitionElement.TryGetProperty("Offset", out JsonElement offsetElement))
+                    {
+                        if (partitionDatabase.Volume.Offset == offsetElement.GetInt64())
+                        {
+                            partitionDatabase.LoadFromJson(partitionElement);
+                            return true;
+                        }
+                    }
                 }
             }
-
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveDatabase] Ошибка проверки существования раздела: {ex.Message}");
+            }
             return false;
         }
 
         public void LoadFromJson(string path)
         {
-            string json = File.ReadAllText(path);
-
-            Dictionary<string, object> databaseObject = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
-
-            if (databaseObject.ContainsKey("Drive"))
+            try
             {
-                JsonElement driveJsonElement = (JsonElement)databaseObject["Drive"];
-
-                if (driveJsonElement.TryGetProperty("Partitions", out var partitionsElement))
+                if (!File.Exists(path))
                 {
-                    foreach (var partitionElement in partitionsElement.EnumerateArray())
+                    Trace.WriteLine($"[DriveDatabase] Файл базы данных не найден: {path}");
+                    return;
+                }
+
+                string json = File.ReadAllText(path);
+                var databaseObject = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+
+                if (databaseObject == null)
+                {
+                    Trace.WriteLine("[DriveDatabase] Не удалось десериализовать базу данных (null результат).");
+                    return;
+                }
+
+                if (databaseObject.ContainsKey("Drive"))
+                {
+                    JsonElement driveJsonElement = (JsonElement)databaseObject["Drive"];
+
+                    if (driveJsonElement.TryGetProperty("Partitions", out var partitionsElement))
                     {
-                        // Check if partition exists
-                        if (!LoadIfNotExists(partitionElement))
+                        Trace.WriteLine("[DriveDatabase] Загрузка разделов из базы данных...");
+
+                        foreach (var partitionElement in partitionsElement.EnumerateArray())
                         {
-                            // It does not exist, let's load it in.
-                            var offset = partitionElement.GetProperty("Offset").GetInt64();
-                            var length = partitionElement.GetProperty("Length").GetInt64();
-                            var name = partitionElement.GetProperty("Name").GetString();
+                            // Проверяем, существует ли раздел, и пробуем загрузить
+                            if (!LoadIfNotExists(partitionElement))
+                            {
+                                // Раздел не найден, создаем новый
+                                // Правило 3 и 1: Безопасное чтение свойств JSON
+                                if (!partitionElement.TryGetProperty("Offset", out JsonElement offsetElement))
+                                {
+                                    Trace.WriteLine("[DriveDatabase] Пропуск раздела: отсутствует поле Offset.");
+                                    continue;
+                                }
 
-                            Volume newVolume = new Volume(this.drive, name, offset, length);
+                                var offset = offsetElement.GetInt64();
 
-                            OnPartitionAdded?.Invoke(this, new AddPartitionEventArgs(newVolume));
+                                if (!partitionElement.TryGetProperty("Length", out JsonElement lengthElement))
+                                {
+                                    Trace.WriteLine("[DriveDatabase] Пропуск раздела: отсутствует поле Length.");
+                                    continue;
+                                }
+                                var length = lengthElement.GetInt64();
 
-                            // Might need some clean up here. Should not rely on the event to add the partition to the database.
-                            partitionDatabases[partitionDatabases.Count - 1].LoadFromJson(partitionElement);
+                                if (!partitionElement.TryGetProperty("Name", out JsonElement nameElement))
+                                {
+                                    Trace.WriteLine("[DriveDatabase] Пропуск раздела: отсутствует поле Name.");
+                                    continue;
+                                }
+                                var name = nameElement.GetString();
+
+                                try
+                                {
+                                    Trace.WriteLine($"[DriveDatabase] Создание нового раздела из базы: {name}, Offset: 0x{offset:X}");
+
+                                    Volume newVolume = new Volume(this.drive, name, offset, length);
+
+                                    OnPartitionAdded?.Invoke(this, new AddPartitionEventArgs(newVolume));
+
+                                    // ВНИМАНИЕ: Оригинальный код полагается на то, что обработчик события 
+                                    // добавил PartitionDatabase в partitionDatabases. Это опасно, если обработчик не сработает.
+                                    if (partitionDatabases.Count > 0)
+                                    {
+                                        partitionDatabases[partitionDatabases.Count - 1].LoadFromJson(partitionElement);
+                                    }
+                                    else
+                                    {
+                                        Trace.WriteLine("[DriveDatabase] Ошибка: список разделов пуст после события добавления. Данные не загружены.");
+                                    }
+                                }
+                                catch (Exception volEx)
+                                {
+                                    Trace.WriteLine($"[DriveDatabase] Ошибка создания Volume из JSON ({name}): {volEx.Message}");
+                                }
+                            }
                         }
                     }
-
+                    else
+                    {
+                        Trace.WriteLine("[DriveDatabase] В JSON отсутствует список Partitions.");
+                    }
                 }
                 else
                 {
-                    throw new FileLoadException("Database: Drive has no Partition list!");
+                    Trace.WriteLine("[DriveDatabase] В JSON отсутствует объект Drive.");
                 }
             }
-            else
+            catch (JsonException jsonEx)
             {
-                throw new FileLoadException("Database: Missing Drive object!");
+                Trace.WriteLine($"[DriveDatabase] Ошибка формата JSON файла: {jsonEx.Message}");
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveDatabase] Критическая ошибка при загрузке базы данных: {ex.Message}");
             }
         }
     }

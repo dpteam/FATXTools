@@ -1,4 +1,7 @@
-﻿using FATXTools.Utilities;
+﻿// Переписано
+using FATXTools.Utilities;
+using System;
+using System.Diagnostics; // 1. Подключаем Trace
 using System.Windows.Forms;
 
 namespace FATXTools.Dialogs
@@ -14,46 +17,128 @@ namespace FATXTools.Dialogs
         {
             InitializeComponent();
 
-            this.Owner = owner;
-            this.Text = title;
-            this._taskRunner = taskRunner;
-            this._interval = interval;
-            this._maxValue = maxValue / interval;
-            progressBar1.Value = 0;
-            progressBar1.Maximum = 10000;
+            try
+            {
+                this.Owner = owner;
+                this.Text = title;
+                this._taskRunner = taskRunner;
+                this._interval = interval;
+
+                // Правило 1: Защита от деления на ноль
+                if (this._interval == 0)
+                {
+                    Trace.WriteLine("[ProgressDialog] Внимание: Interval равен 0. Установлено значение по умолчанию 1 во избежание деления на ноль.");
+                    this._interval = 1;
+                }
+
+                this._maxValue = maxValue / this._interval;
+
+                progressBar1.Value = 0;
+                progressBar1.Maximum = 10000;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[ProgressDialog] Ошибка инициализации диалога прогресса: {ex.Message}");
+            }
         }
 
-        public void SetText(string text)
+        // Внутренний метод для обновления текста в UI потоке
+        private void SetTextInternal(string text)
         {
             label1.Text = text;
         }
 
-        public void UpdateProgress(long currentValue)
+        public void SetText(string text)
         {
-            if (currentValue > _maxValue)
+            // Правило 1: Потокобезопасность (InvokeRequired)
+            if (this.InvokeRequired)
             {
-                currentValue = _maxValue;
+                this.BeginInvoke(new Action<string>(SetTextInternal), text);
             }
-            var curValue = currentValue;
-            var maxValue = _maxValue;
-            var percentage = ((float)curValue / (float)maxValue) * 100;
-            var progress = ((float)curValue / (float)maxValue) * 10000;
-            progressBar1.Value = (int)progress;
+            else
+            {
+                SetTextInternal(text);
+            }
         }
 
-        public void UpdateLabel(string label)
+        // Внутренний метод для обновления прогресса в UI потоке
+        private void UpdateProgressInternal(long currentValue)
+        {
+            try
+            {
+                if (_maxValue == 0) return;
+
+                if (currentValue > _maxValue)
+                {
+                    currentValue = _maxValue;
+                }
+
+                var curValue = currentValue;
+                var maxValue = _maxValue;
+
+                // Вычисление прогресса
+                float percentage = ((float)curValue / (float)maxValue);
+                var progress = percentage * 10000;
+
+                progressBar1.Value = (int)progress;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[ProgressDialog] Ошибка обновления прогресса: {ex.Message}");
+            }
+        }
+
+        public void UpdateProgress(long currentValue)
+        {
+            // Правило 1: Потокобезопасность
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(new Action<long>(UpdateProgressInternal), currentValue);
+            }
+            else
+            {
+                UpdateProgressInternal(currentValue);
+            }
+        }
+
+        // Внутренний метод для обновления лейбла в UI потоке
+        private void UpdateLabelInternal(string label)
         {
             label1.Text = label;
         }
 
+        public void UpdateLabel(string label)
+        {
+            // Правило 1: Потокобезопасность
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(new Action<string>(UpdateLabelInternal), label);
+            }
+            else
+            {
+                UpdateLabelInternal(label);
+            }
+        }
+
         private void AnalyzerProgress_FormClosing(object sender, FormClosingEventArgs e)
         {
-            e.Cancel = !_taskRunner.CancelTask();
-
-            if (e.Cancel)
+            try
             {
-                // Let the user know we're cancelling
-                label1.Text = "Cancelling. Please wait.";
+                if (_taskRunner != null)
+                {
+                    e.Cancel = !_taskRunner.CancelTask();
+
+                    if (e.Cancel)
+                    {
+                        Trace.WriteLine("[ProgressDialog] Запрошена отмена задачи...");
+                        // Используем безопасный метод обновления
+                        SetText("Cancelling. Please wait.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[ProgressDialog] Ошибка при закрытии диалога: {ex.Message}");
             }
         }
     }

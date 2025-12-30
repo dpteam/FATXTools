@@ -1,6 +1,9 @@
-﻿using FATX.FileSystem;
+﻿// Переписано
+using FATX.FileSystem;
 using FATXTools.Database;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics; // 1. Подключаем Trace
 
 namespace FATX.Analyzers
 {
@@ -31,44 +34,73 @@ namespace FATX.Analyzers
         {
             foreach (var cluster in databaseFile.ClusterChain)
             {
-                var occupants = clusterMap[(uint)cluster];
-                if (!occupants.Contains(databaseFile))
-                    occupants.Add(databaseFile);
+                // Правило 1: Проверка границ перед доступом к словарю, чтобы избежать Exception
+                if (cluster < volume.MaxClusters)
+                {
+                    if (clusterMap.ContainsKey(cluster))
+                    {
+                        var occupants = clusterMap[cluster];
+                        if (!occupants.Contains(databaseFile))
+                            occupants.Add(databaseFile);
+                    }
+                }
+                else
+                {
+                    // Правило 3: Улучшенное логирование (некорректный кластер)
+                    Trace.WriteLine($"[IntegrityAnalyzer] Файл {databaseFile.FileName} ссылается на кластер {cluster}, который вне границ тома (MaxClusters: {volume.MaxClusters}).");
+                }
             }
         }
 
         private void UpdateClusterMap()
         {
-            clusterMap = new Dictionary<uint, List<DatabaseFile>>((int)volume.MaxClusters);
-            for (uint i = 0; i < volume.MaxClusters; i++)
+            try
             {
-                clusterMap[i] = new List<DatabaseFile>();
-            }
+                clusterMap = new Dictionary<uint, List<DatabaseFile>>((int)volume.MaxClusters);
 
-            foreach (var pair in database.GetFiles())
-            {
-                var databaseFile = pair.Value;
-
-                // We handle active cluster chains conventionally
-                if (!databaseFile.IsDeleted)
+                for (uint i = 0; i < volume.MaxClusters; i++)
                 {
-                    UpdateClusters(databaseFile);
+                    clusterMap[i] = new List<DatabaseFile>();
                 }
-                // Otherwise, we generate an artificial cluster chain
-                else
+
+                foreach (var pair in database.GetFiles())
                 {
-                    // TODO: Add a blocklist setting
-                    if (databaseFile.FileName.StartsWith("xdk_data") ||
-                        databaseFile.FileName.StartsWith("xdk_file") ||
-                        databaseFile.FileName.StartsWith("tempcda"))
+                    try
                     {
-                        // These are usually always large and/or corrupted
-                        // TODO: still don't really know what these files are
-                        continue;
-                    }
+                        var databaseFile = pair.Value;
 
-                    UpdateClusters(databaseFile);
+                        // We handle active cluster chains conventionally
+                        if (!databaseFile.IsDeleted)
+                        {
+                            UpdateClusters(databaseFile);
+                        }
+                        // Otherwise, we generate an artificial cluster chain
+                        else
+                        {
+                            // TODO: Add a blocklist setting
+                            if (databaseFile.FileName.StartsWith("xdk_data") ||
+                                databaseFile.FileName.StartsWith("xdk_file") ||
+                                databaseFile.FileName.StartsWith("tempcda"))
+                            {
+                                // These are usually always large and/or corrupted
+                                // TODO: still don't really know what these files are
+                                Trace.WriteLine($"[IntegrityAnalyzer] Пропуск системного файла: {databaseFile.FileName}");
+                                continue;
+                            }
+
+                            UpdateClusters(databaseFile);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Правило 1: Если один файл вызвал ошибку, пропускаем его, но продолжаем строить карту
+                        Trace.WriteLine($"[IntegrityAnalyzer] Ошибка при обновлении карты кластеров для файла {pair.Key}: {ex.Message}");
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[IntegrityAnalyzer] Критическая ошибка при инициализации карты кластеров: {ex.Message}");
             }
         }
 
@@ -83,7 +115,14 @@ namespace FATX.Analyzers
         {
             foreach (var databaseFile in database.GetFiles().Values)
             {
-                databaseFile.SetCollisions(FindCollidingClusters(databaseFile));
+                try
+                {
+                    databaseFile.SetCollisions(FindCollidingClusters(databaseFile));
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"[IntegrityAnalyzer] Ошибка при поиске коллизий для {databaseFile.FileName}: {ex.Message}");
+                }
             }
         }
 
@@ -92,14 +131,24 @@ namespace FATX.Analyzers
             // Get a list of cluster who are possibly corrupted
             List<uint> collidingClusters = new List<uint>();
 
-            // for each cluster used by this dirent, check if other dirents are
-            // also claiming it.
-            foreach (var cluster in databaseFile.ClusterChain)
+            try
             {
-                if (clusterMap[(uint)cluster].Count > 1)
+                // for each cluster used by this dirent, check if other dirents are
+                // also claiming it.
+                foreach (var cluster in databaseFile.ClusterChain)
                 {
-                    collidingClusters.Add((uint)cluster);
+                    if (cluster < volume.MaxClusters && clusterMap.ContainsKey(cluster))
+                    {
+                        if (clusterMap[cluster].Count > 1)
+                        {
+                            collidingClusters.Add((uint)cluster);
+                        }
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[IntegrityAnalyzer] Ошибка в процессе проверки коллизий: {ex.Message}");
             }
 
             return collidingClusters;
@@ -108,24 +157,46 @@ namespace FATX.Analyzers
         private bool WasModifiedLast(DatabaseFile databaseFile, List<uint> collisions)
         {
             var dirent = databaseFile.GetDirent();
-            foreach (var cluster in collisions)
+
+            try
             {
-                var clusterEnts = clusterMap[(uint)cluster];
-                foreach (var ent in clusterEnts)
+                foreach (var cluster in collisions)
                 {
-                    var entDirent = ent.GetDirent();
-
-                    // Skip when we encounter the same dirent
-                    if (dirent.Offset == entDirent.Offset)
+                    if (clusterMap.ContainsKey(cluster))
                     {
-                        continue;
-                    }
+                        var clusterEnts = clusterMap[cluster];
+                        foreach (var ent in clusterEnts)
+                        {
+                            var entDirent = ent.GetDirent();
 
-                    if (dirent.LastAccessTime.AsDateTime() < entDirent.LastAccessTime.AsDateTime())
-                    {
-                        return false;
+                            // Skip when we encounter the same dirent
+                            if (dirent.Offset == entDirent.Offset)
+                            {
+                                continue;
+                            }
+
+                            // Правило 1: Защита при сравнении дат (AsDateTime может падать)
+                            try
+                            {
+                                if (dirent.LastAccessTime.AsDateTime() < entDirent.LastAccessTime.AsDateTime())
+                                {
+                                    return false;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Trace.WriteLine($"[IntegrityAnalyzer] Не удалось сравнить время доступа для {dirent.FileName}: {ex.Message}. Предполагаем, что файл старый.");
+                                // Если не можем сравнить, безопасно предположить false (не последний)
+                                return false;
+                            }
+                        }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[IntegrityAnalyzer] Ошибка при проверке времени изменения {databaseFile.FileName}: {ex.Message}");
+                return false;
             }
 
             return true;
@@ -133,66 +204,65 @@ namespace FATX.Analyzers
 
         private void DoRanking(DatabaseFile databaseFile)
         {
-            var dirent = databaseFile.GetDirent();
-
-            // Rank 1
-            // - Part of active file system
-            // - Not deleted
-            // Rank 2
-            // - Recovered
-            // - No conflicting clusters detected
-            // Rank 3
-            // - Recovered
-            // - Some conflicting clusters
-            // - Most recent data written
-            // Rank 4
-            // - Recovered
-            // - Some conflicting clusters
-            // - Not most recent data written
-            // Rank 5
-            // - Recovered
-            // - All clusters overwritten
-
-            if (!databaseFile.IsDeleted)
+            try
             {
-                if (!dirent.IsDeleted())
+                var dirent = databaseFile.GetDirent();
+
+                // Rank 1 (0 в коде) - Part of active file system / Not deleted
+                // Rank 2 (1 в коде) - Recovered / No conflicting clusters
+                // Rank 3 (2 в коде) - Recovered / Conflicting / Most recent
+                // Rank 4 (3 в коде) - Recovered / Conflicting / Not most recent
+                // Rank 5 (4 в коде) - Recovered / All overwritten
+
+                if (!databaseFile.IsDeleted)
                 {
-                    databaseFile.SetRanking((0));
-                }
-            }
-            else
-            {
-                // File was deleted
-                var collisions = databaseFile.GetCollisions();
-                if (collisions.Count == 0)
-                {
-                    databaseFile.SetRanking((1));
+                    if (!dirent.IsDeleted())
+                    {
+                        databaseFile.SetRanking((0));
+                    }
                 }
                 else
                 {
-                    // File has colliding clusters
-                    if (WasModifiedLast(databaseFile, collisions))
+                    // File was deleted
+                    var collisions = databaseFile.GetCollisions();
+                    if (collisions.Count == 0)
                     {
-                        // This file appears to have been written most recently.
-                        databaseFile.SetRanking((2));
+                        databaseFile.SetRanking((1));
                     }
                     else
                     {
-                        // File was predicted to be overwritten
-                        var numClusters = (int)(((dirent.FileSize + (this.volume.BytesPerCluster - 1)) &
-                            ~(this.volume.BytesPerCluster - 1)) / this.volume.BytesPerCluster);
-                        if (collisions.Count != numClusters)
+                        // File has colliding clusters
+                        if (WasModifiedLast(databaseFile, collisions))
                         {
-                            // Not every cluster was overwritten
-                            databaseFile.SetRanking((3));
+                            // This file appears to have been written most recently.
+                            databaseFile.SetRanking((2));
                         }
                         else
                         {
-                            // Every cluster appears to have been overwritten
-                            databaseFile.SetRanking((4));
+                            // File was predicted to be overwritten
+                            var numClusters = (int)(((dirent.FileSize + (this.volume.BytesPerCluster - 1)) &
+                                ~(this.volume.BytesPerCluster - 1)) / this.volume.BytesPerCluster);
+
+                            if (collisions.Count != numClusters)
+                            {
+                                // Not every cluster was overwritten
+                                databaseFile.SetRanking((3));
+                            }
+                            else
+                            {
+                                // Every cluster appears to have been overwritten
+                                databaseFile.SetRanking((4));
+                            }
                         }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                // Правило 1: Ошибка ранжирования не должна ломать цикл
+                Trace.WriteLine($"[IntegrityAnalyzer] Ошибка при присвоении ранга файлу {databaseFile.FileName}: {ex.Message}");
+                // Можно присвоить самый низкий ранг по умолчанию, если нужно
+                databaseFile.SetRanking(4);
             }
         }
 
@@ -215,6 +285,7 @@ namespace FATX.Analyzers
             else
             {
                 occupants = null;
+                Trace.WriteLine($"[IntegrityAnalyzer] Попытка получить жильцов кластера {cluster}, который отсутствует в карте.");
             }
 
             return occupants;

@@ -1,4 +1,5 @@
-﻿using FATX.Analyzers;
+﻿// Переписано
+using FATX.Analyzers;
 using FATX.FileSystem;
 using FATXTools.Database;
 using FATXTools.Dialogs;
@@ -6,6 +7,7 @@ using FATXTools.Utilities;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Threading;
@@ -19,13 +21,13 @@ namespace FATXTools
         private TaskRunner _taskRunner;
 
         /// <summary>
-        /// Mapping of cluster index to it's directory entries.
+        /// Сопоставление индекса кластера с его записями каталогов.
         /// </summary>
         private Dictionary<uint, List<DatabaseFile>> clusterNodes =
             new Dictionary<uint, List<DatabaseFile>>();
 
         /// <summary>
-        /// Leads to the node of the current cluster.
+        /// Ссылка на узел текущего кластера.
         /// </summary>
         private TreeNode currentClusterNode;
 
@@ -58,7 +60,14 @@ namespace FATXTools
             listViewItemComparer = new ListViewItemComparer();
             listView1.ListViewItemSorter = listViewItemComparer;
 
-            PopulateTreeView(database.GetRootFiles());
+            try
+            {
+                PopulateTreeView(database.GetRootFiles());
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Критическая ошибка при инициализации дерева: {ex.Message}");
+            }
         }
 
         private enum NodeType
@@ -81,68 +90,100 @@ namespace FATXTools
 
         private void PopulateFolder(List<DatabaseFile> children, TreeNode parent)
         {
+            if (children == null) return;
+
             foreach (var child in children)
             {
-                if (child.IsDirectory())
+                try
                 {
-                    var childNode = parent.Nodes.Add(child.FileName);
-                    childNode.Tag = new NodeTag(child, NodeType.Dirent);
-                    PopulateFolder(child.Children, childNode);
+                    if (child.IsDirectory())
+                    {
+                        var childNode = parent.Nodes.Add(child.FileName);
+                        childNode.Tag = new NodeTag(child, NodeType.Dirent);
+                        PopulateFolder(child.Children, childNode);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Ошибка при добавлении папки '{child?.FileName}': {ex.Message}");
                 }
             }
         }
 
         private void RefreshTreeView()
         {
-            PopulateTreeView(_fileDatabase.GetRootFiles());
+            try
+            {
+                PopulateTreeView(_fileDatabase.GetRootFiles());
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка при обновлении дерева: {ex.Message}");
+            }
         }
 
         public void PopulateTreeView(List<DatabaseFile> results)
         {
-            // Remove all nodes
+            // Удаление всех узлов
             treeView1.BeginUpdate();
             treeView1.Nodes.Clear();
             clusterNodes.Clear();
 
+            if (results == null)
+            {
+                treeView1.EndUpdate();
+                return;
+            }
+
+            Trace.WriteLine($"Начало заполнения дерева, найдено записей: {results.Count}");
+
             foreach (var result in results)
             {
-                var cluster = result.Cluster;
-                if (!clusterNodes.ContainsKey(cluster))
+                try
                 {
-                    List<DatabaseFile> list = new List<DatabaseFile>()
+                    var cluster = result.Cluster;
+                    if (!clusterNodes.ContainsKey(cluster))
                     {
-                        result
-                    };
+                        List<DatabaseFile> list = new List<DatabaseFile>()
+                        {
+                            result
+                        };
 
-                    clusterNodes.Add(cluster, list);
-                }
-                else
-                {
-                    var list = clusterNodes[cluster];
-                    list.Add(result);
-                }
+                        clusterNodes.Add(cluster, list);
+                    }
+                    else
+                    {
+                        var list = clusterNodes[cluster];
+                        list.Add(result);
+                    }
 
-                var clusterNodeText = "Cluster " + result.Cluster;
-                TreeNode clusterNode;
-                if (!treeView1.Nodes.ContainsKey(clusterNodeText))
-                {
-                    clusterNode = treeView1.Nodes.Add(clusterNodeText, clusterNodeText);
-                    clusterNode.Tag = new NodeTag(clusterNodes[cluster], NodeType.Cluster);
-                }
-                else
-                {
-                    clusterNode = treeView1.Nodes[clusterNodeText];
-                }
+                    var clusterNodeText = "Cluster " + result.Cluster;
+                    TreeNode clusterNode;
+                    if (!treeView1.Nodes.ContainsKey(clusterNodeText))
+                    {
+                        clusterNode = treeView1.Nodes.Add(clusterNodeText, clusterNodeText);
+                        clusterNode.Tag = new NodeTag(clusterNodes[cluster], NodeType.Cluster);
+                    }
+                    else
+                    {
+                        clusterNode = treeView1.Nodes[clusterNodeText];
+                    }
 
-                if (result.IsDirectory())
+                    if (result.IsDirectory())
+                    {
+                        var rootNode = clusterNode.Nodes.Add(result.FileName);
+                        rootNode.Tag = new NodeTag(result, NodeType.Dirent);
+                        PopulateFolder(result.Children, rootNode);
+                    }
+                }
+                catch (Exception ex)
                 {
-                    var rootNode = clusterNode.Nodes.Add(result.FileName);
-                    rootNode.Tag = new NodeTag(result, NodeType.Dirent);
-                    PopulateFolder(result.Children, rootNode);
+                    Trace.WriteLine($"Ошибка при обработке записи '{result.FileName}': {ex.Message}");
                 }
             }
 
             treeView1.EndUpdate();
+            Trace.WriteLine("Заполнение дерева завершено.");
         }
 
         private void PopulateListView(List<DatabaseFile> dirents, DatabaseFile parent)
@@ -150,86 +191,118 @@ namespace FATXTools
             listView1.BeginUpdate();
             listView1.Items.Clear();
 
-            var upDir = listView1.Items.Add("");
-
-            upDir.SubItems.Add("...");
-            if (parent != null)
+            try
             {
-                upDir.Tag = new NodeTag(parent, NodeType.Dirent);
-            }
-            else
-            {
-                NodeTag nodeTag = (NodeTag)currentClusterNode.Tag;
-                upDir.Tag = new NodeTag(nodeTag.Tag as List<DatabaseFile>, NodeType.Cluster);
-            }
+                var upDir = listView1.Items.Add("");
 
-            List<ListViewItem> items = new List<ListViewItem>();
-            int index = 1;
-            foreach (DatabaseFile databaseFile in dirents)
-            {
-                ListViewItem item = new ListViewItem(index.ToString());
-                item.Tag = new NodeTag(databaseFile, NodeType.Dirent);
-
-                item.SubItems.Add(databaseFile.FileName);
-
-                DateTime creationTime = databaseFile.CreationTime.AsDateTime();
-                DateTime lastWriteTime = databaseFile.LastWriteTime.AsDateTime();
-                DateTime lastAccessTime = databaseFile.LastAccessTime.AsDateTime();
-
-                string sizeStr = "";
-                if (!databaseFile.IsDirectory())
+                upDir.SubItems.Add("...");
+                if (parent != null)
                 {
-                    item.ImageIndex = 1;
-                    sizeStr = Utility.FormatBytes(databaseFile.FileSize);
+                    upDir.Tag = new NodeTag(parent, NodeType.Dirent);
                 }
                 else
                 {
-                    item.ImageIndex = 0;
+                    NodeTag nodeTag = (NodeTag)currentClusterNode?.Tag; // Добавлена проверка на null
+                    if (nodeTag.Tag != null)
+                    {
+                        upDir.Tag = new NodeTag(nodeTag.Tag as List<DatabaseFile>, NodeType.Cluster);
+                    }
                 }
 
-                item.SubItems.Add(sizeStr);
-                item.SubItems.Add(creationTime.ToString());
-                item.SubItems.Add(lastWriteTime.ToString());
-                item.SubItems.Add(lastAccessTime.ToString());
-                item.SubItems.Add("0x" + databaseFile.Offset.ToString("x"));
-                item.SubItems.Add(databaseFile.Cluster.ToString());
+                List<ListViewItem> items = new List<ListViewItem>();
+                int index = 1;
 
-                item.BackColor = statusColor[databaseFile.GetRanking()];
+                if (dirents != null)
+                {
+                    foreach (DatabaseFile databaseFile in dirents)
+                    {
+                        try
+                        {
+                            ListViewItem item = new ListViewItem(index.ToString());
+                            item.Tag = new NodeTag(databaseFile, NodeType.Dirent);
 
-                index++;
+                            item.SubItems.Add(databaseFile.FileName);
 
-                items.Add(item);
+                            DateTime creationTime = databaseFile.CreationTime.AsDateTime();
+                            DateTime lastWriteTime = databaseFile.LastWriteTime.AsDateTime();
+                            DateTime lastAccessTime = databaseFile.LastAccessTime.AsDateTime();
+
+                            string sizeStr = "";
+                            if (!databaseFile.IsDirectory())
+                            {
+                                item.ImageIndex = 1;
+                                sizeStr = Utility.FormatBytes(databaseFile.FileSize);
+                            }
+                            else
+                            {
+                                item.ImageIndex = 0;
+                            }
+
+                            item.SubItems.Add(sizeStr);
+                            item.SubItems.Add(creationTime.ToString());
+                            item.SubItems.Add(lastWriteTime.ToString());
+                            item.SubItems.Add(lastAccessTime.ToString());
+                            item.SubItems.Add("0x" + databaseFile.Offset.ToString("x"));
+                            item.SubItems.Add(databaseFile.Cluster.ToString());
+
+                            // Защита от выхода за границы массива цветов
+                            if (databaseFile.GetRanking() >= 0 && databaseFile.GetRanking() < statusColor.Length)
+                            {
+                                item.BackColor = statusColor[databaseFile.GetRanking()];
+                            }
+
+                            index++;
+
+                            items.Add(item);
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine($"Ошибка при добавлении файла в список: {databaseFile?.FileName}. {ex.Message}");
+                        }
+                    }
+                }
+
+                listView1.Items.AddRange(items.ToArray());
             }
-
-            listView1.Items.AddRange(items.ToArray());
-            listView1.EndUpdate();
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Критическая ошибка при заполнении списка: {ex.Message}");
+            }
+            finally
+            {
+                listView1.EndUpdate();
+            }
         }
 
         private void treeView1_AfterSelect(object sender, TreeViewEventArgs e)
         {
-            currentClusterNode = e.Node;
-            while (currentClusterNode.Parent != null)
+            try
             {
-                currentClusterNode = currentClusterNode.Parent;
+                currentClusterNode = e.Node;
+                while (currentClusterNode.Parent != null)
+                {
+                    currentClusterNode = currentClusterNode.Parent;
+                }
+
+                Trace.WriteLine($"Текущий кластер: {currentClusterNode.Text}");
+
+                NodeTag nodeTag = (NodeTag)e.Node.Tag;
+                switch (nodeTag.Type)
+                {
+                    case NodeType.Cluster:
+                        List<DatabaseFile> dirents = (List<DatabaseFile>)nodeTag.Tag;
+                        PopulateListView(dirents, null);
+                        break;
+
+                    case NodeType.Dirent:
+                        DatabaseFile databaseFile = (DatabaseFile)nodeTag.Tag;
+                        PopulateListView(databaseFile.Children, databaseFile.GetParent());
+                        break;
+                }
             }
-
-            //Console.WriteLine($"Current Cluster Node: {currentClusterNode.Text}");
-
-            NodeTag nodeTag = (NodeTag)e.Node.Tag;
-            switch (nodeTag.Type)
+            catch (Exception ex)
             {
-                case NodeType.Cluster:
-                    List<DatabaseFile> dirents = (List<DatabaseFile>)nodeTag.Tag;
-
-                    PopulateListView(dirents, null);
-
-                    break;
-                case NodeType.Dirent:
-                    DatabaseFile databaseFile = (DatabaseFile)nodeTag.Tag;
-
-                    PopulateListView(databaseFile.Children, databaseFile.GetParent());
-
-                    break;
+                Trace.WriteLine($"Ошибка при выборе узла дерева: {ex.Message}");
             }
         }
 
@@ -238,43 +311,59 @@ namespace FATXTools
             if (listView1.SelectedItems.Count > 1)
                 return;
 
-            //Console.WriteLine($"Current Cluster Node: {currentClusterNode.Text}");
-
-            NodeTag nodeTag = (NodeTag)listView1.SelectedItems[0].Tag;
-
-            switch (nodeTag.Type)
+            try
             {
-                case NodeType.Dirent:
-                    DatabaseFile databaseFile = nodeTag.Tag as DatabaseFile;
+                //Trace.WriteLine($"Текущий кластер: {currentClusterNode.Text}");
 
-                    if (databaseFile.IsDirectory())
-                    {
-                        PopulateListView(databaseFile.Children, databaseFile.GetParent());
-                    }
+                NodeTag nodeTag = (NodeTag)listView1.SelectedItems[0].Tag;
 
-                    break;
-                case NodeType.Cluster:
-                    List<DatabaseFile> dirents = nodeTag.Tag as List<DatabaseFile>;
+                switch (nodeTag.Type)
+                {
+                    case NodeType.Dirent:
+                        DatabaseFile databaseFile = nodeTag.Tag as DatabaseFile;
 
-                    PopulateListView(dirents, null);
+                        if (databaseFile.IsDirectory())
+                        {
+                            PopulateListView(databaseFile.Children, databaseFile.GetParent());
+                        }
 
-                    break;
+                        break;
+
+                    case NodeType.Cluster:
+                        List<DatabaseFile> dirents = nodeTag.Tag as List<DatabaseFile>;
+                        PopulateListView(dirents, null);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка при двойном клике: {ex.Message}");
             }
         }
+
         private long CountFiles(List<DatabaseFile> dirents)
         {
-            // DirectoryEntry.CountFiles does not count deleted files
+            // DirectoryEntry.CountFiles не считает удаленные файлы
             long numFiles = 0;
+
+            if (dirents == null) return 0;
 
             foreach (var databaseFile in dirents)
             {
-                if (databaseFile.IsDirectory())
+                try
                 {
-                    numFiles += CountFiles(databaseFile.Children) + 1;
+                    if (databaseFile.IsDirectory())
+                    {
+                        numFiles += CountFiles(databaseFile.Children) + 1;
+                    }
+                    else
+                    {
+                        numFiles++;
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    numFiles++;
+                    Trace.WriteLine($"Ошибка при подсчете файлов: {ex.Message}");
                 }
             }
 
@@ -283,102 +372,137 @@ namespace FATXTools
 
         private async void RunRecoverAllTaskAsync(string path, Dictionary<string, List<DatabaseFile>> clusters)
         {
-            // TODO: There should be a better way to run this.
             RecoveryTask recoverTask = null;
-
             long numFiles = 0;
 
-            foreach (var cluster in clusters)
+            try
             {
-                numFiles += CountFiles(cluster.Value);
-            }
-
-            _taskRunner.Maximum = numFiles;
-            _taskRunner.Interval = 1;
-
-            await _taskRunner.RunTaskAsync("Save File",
-                (CancellationToken cancellationToken, IProgress<int> progress) =>
+                foreach (var cluster in clusters)
                 {
-                    recoverTask = new RecoveryTask(this._volume, cancellationToken, progress);
-                    foreach (var cluster in clusters)
+                    numFiles += CountFiles(cluster.Value);
+                }
+
+                _taskRunner.Maximum = numFiles;
+                _taskRunner.Interval = 1;
+
+                Trace.WriteLine($"Запуск задачи сохранения всех файлов. Всего файлов: {numFiles}");
+
+                await _taskRunner.RunTaskAsync("Сохранение файлов",
+                    (CancellationToken cancellationToken, IProgress<int> progress) =>
                     {
-                        string clusterDir = path + "\\" + cluster.Key;
-
-                        Directory.CreateDirectory(clusterDir);
-
-                        recoverTask.SaveAll(clusterDir, cluster.Value);
-                    }
-                },
-                (int progress) =>
-                {
-                    string currentFile = recoverTask.GetCurrentFile();
-                    _taskRunner.UpdateLabel($"{progress}/{numFiles}: {currentFile}");
-                    _taskRunner.UpdateProgress(progress);
-                },
-                () =>
-                {
-                    Console.WriteLine("Finished saving files.");
-                });
+                        recoverTask = new RecoveryTask(this._volume, cancellationToken, progress);
+                        foreach (var cluster in clusters)
+                        {
+                            try
+                            {
+                                string clusterDir = Path.Combine(path, cluster.Key);
+                                Directory.CreateDirectory(clusterDir);
+                                recoverTask.SaveAll(clusterDir, cluster.Value);
+                            }
+                            catch (Exception ex)
+                            {
+                                Trace.WriteLine($"Ошибка при обработке кластера {cluster.Key}: {ex.Message}");
+                            }
+                        }
+                    },
+                    (int progress) =>
+                    {
+                        string currentFile = recoverTask?.GetCurrentFile() ?? "Неизвестно";
+                        _taskRunner.UpdateLabel($"{progress}/{numFiles}: {currentFile}");
+                        _taskRunner.UpdateProgress(progress);
+                    },
+                    () =>
+                    {
+                        Trace.WriteLine("Сохранение файлов завершено.");
+                    });
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Критическая ошибка в задаче сохранения всех файлов: {ex.Message}");
+            }
         }
 
         private async void RunRecoverDirectoryEntryTaskAsync(string path, DatabaseFile databaseFile)
         {
             RecoveryTask recoverTask = null;
 
-            var numFiles = databaseFile.CountFiles();
-            _taskRunner.Maximum = numFiles;
-            _taskRunner.Interval = 1;
+            try
+            {
+                var numFiles = databaseFile.CountFiles();
+                _taskRunner.Maximum = numFiles;
+                _taskRunner.Interval = 1;
 
-            await _taskRunner.RunTaskAsync("Save File",
-                (CancellationToken cancellationToken, IProgress<int> progress) =>
-                {
-                    recoverTask = new RecoveryTask(this._volume, cancellationToken, progress);
-                    recoverTask.Save(path, databaseFile);
-                },
-                (int progress) =>
-                {
-                    string currentFile = recoverTask.GetCurrentFile();
-                    _taskRunner.UpdateLabel($"{progress}/{numFiles}: {currentFile}");
-                    _taskRunner.UpdateProgress(progress);
-                },
-                () =>
-                {
-                    Console.WriteLine("Finished saving files.");
-                });
+                Trace.WriteLine($"Запуск задачи сохранения директории: {databaseFile.FileName}");
+
+                await _taskRunner.RunTaskAsync("Сохранение файла",
+                    (CancellationToken cancellationToken, IProgress<int> progress) =>
+                    {
+                        recoverTask = new RecoveryTask(this._volume, cancellationToken, progress);
+                        recoverTask.Save(path, databaseFile);
+                    },
+                    (int progress) =>
+                    {
+                        string currentFile = recoverTask?.GetCurrentFile() ?? "Неизвестно";
+                        _taskRunner.UpdateLabel($"{progress}/{numFiles}: {currentFile}");
+                        _taskRunner.UpdateProgress(progress);
+                    },
+                    () =>
+                    {
+                        Trace.WriteLine("Сохранение директории завершено.");
+                    });
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка сохранения директории {databaseFile.FileName}: {ex.Message}");
+            }
         }
 
         private async void RunRecoverClusterTaskAsync(string path, List<DatabaseFile> dirents)
         {
             RecoveryTask recoverTask = null;
 
-            long numFiles = CountFiles(dirents);
+            try
+            {
+                long numFiles = CountFiles(dirents);
 
-            _taskRunner.Maximum = numFiles;
-            _taskRunner.Interval = 1;
+                _taskRunner.Maximum = numFiles;
+                _taskRunner.Interval = 1;
 
-            await _taskRunner.RunTaskAsync("Save All",
-                (CancellationToken cancellationToken, IProgress<int> progress) =>
-                {
-                    try
+                Trace.WriteLine($"Запуск задачи сохранения выбранного. Путь: {path}");
+
+                await _taskRunner.RunTaskAsync("Сохранить все",
+                    (CancellationToken cancellationToken, IProgress<int> progress) =>
                     {
-                        recoverTask = new RecoveryTask(this._volume, cancellationToken, progress);
-                        recoverTask.SaveAll(path, dirents);
-                    }
-                    catch (OperationCanceledException)
+                        try
+                        {
+                            recoverTask = new RecoveryTask(this._volume, cancellationToken, progress);
+                            recoverTask.SaveAll(path, dirents);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            Trace.WriteLine("Сохранение отменено пользователем.");
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine($"Ошибка при выполнении сохранения: {ex.Message}");
+                            throw; // Пробрасываем дальше, если нужно корректно завершить задачу
+                        }
+                    },
+                    (int progress) =>
                     {
-                        Console.WriteLine("Save all cancelled");
-                    }
-                },
-                (int progress) =>
-                {
-                    string currentFile = recoverTask.GetCurrentFile();
-                    _taskRunner.UpdateLabel($"{progress}/{numFiles}: {currentFile}");
-                    _taskRunner.UpdateProgress(progress);
-                },
-                () =>
-                {
-                    Console.WriteLine("Finished saving files.");
-                });
+                        string currentFile = recoverTask?.GetCurrentFile() ?? "Неизвестно";
+                        _taskRunner.UpdateLabel($"{progress}/{numFiles}: {currentFile}");
+                        _taskRunner.UpdateProgress(progress);
+                    },
+                    () =>
+                    {
+                        Trace.WriteLine("Сохранение выбранного завершено.");
+                    });
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Критическая ошибка в задаче сохранения: {ex.Message}");
+            }
         }
 
         private void listRecoverSelectedToolStripMenuItem_Click(object sender, EventArgs e)
@@ -386,168 +510,194 @@ namespace FATXTools
             if (listView1.SelectedItems.Count == 0)
                 return;
 
-            var selectedItems = listView1.SelectedItems;
-            using (var dialog = new FolderBrowserDialog())
+            try
             {
-                if (dialog.ShowDialog() == DialogResult.OK)
+                var selectedItems = listView1.SelectedItems;
+                using (var dialog = new FolderBrowserDialog())
                 {
-                    List<DatabaseFile> selectedFiles = new List<DatabaseFile>();
-
-                    foreach (ListViewItem selectedItem in selectedItems)
+                    if (dialog.ShowDialog() == DialogResult.OK)
                     {
-                        NodeTag nodeTag = (NodeTag)selectedItem.Tag;
+                        List<DatabaseFile> selectedFiles = new List<DatabaseFile>();
 
-                        switch (nodeTag.Type)
+                        foreach (ListViewItem selectedItem in selectedItems)
                         {
-                            case NodeType.Dirent:
-                                DatabaseFile databaseFile = nodeTag.Tag as DatabaseFile;
+                            NodeTag nodeTag = (NodeTag)selectedItem.Tag;
 
-                                selectedFiles.Add(databaseFile);
-
-                                break;
+                            switch (nodeTag.Type)
+                            {
+                                case NodeType.Dirent:
+                                    DatabaseFile databaseFile = nodeTag.Tag as DatabaseFile;
+                                    selectedFiles.Add(databaseFile);
+                                    break;
+                            }
                         }
-                    }
 
-                    RunRecoverClusterTaskAsync(dialog.SelectedPath, selectedFiles);
+                        RunRecoverClusterTaskAsync(dialog.SelectedPath, selectedFiles);
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка при запуске восстановления выбранных: {ex.Message}");
             }
         }
 
         private void listRecoverCurrentDirectoryToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            using (var dialog = new FolderBrowserDialog())
+            try
             {
-                if (dialog.ShowDialog() == DialogResult.OK)
+                using (var dialog = new FolderBrowserDialog())
                 {
-                    // TODO: Create `DirectoryEntry currentDirectory` for this class
-                    //  so that we don't go through the list items.
-                    //  Also, should we be dumping to a cluster directory?
-                    List<DatabaseFile> selectedFiles = new List<DatabaseFile>();
-
-                    foreach (ListViewItem item in listView1.Items)
+                    if (dialog.ShowDialog() == DialogResult.OK)
                     {
-                        if (item.Index == 0)
+                        List<DatabaseFile> selectedFiles = new List<DatabaseFile>();
+
+                        foreach (ListViewItem item in listView1.Items)
                         {
-                            continue;
+                            if (item.Index == 0) continue;
+
+                            NodeTag nodeTag = (NodeTag)item.Tag;
+
+                            switch (nodeTag.Type)
+                            {
+                                case NodeType.Dirent:
+                                    DatabaseFile databaseFile = nodeTag.Tag as DatabaseFile;
+                                    selectedFiles.Add(databaseFile);
+                                    break;
+                            }
                         }
 
-                        NodeTag nodeTag = (NodeTag)item.Tag;
-
-                        switch (nodeTag.Type)
-                        {
-                            case NodeType.Dirent:
-                                DatabaseFile databaseFile = nodeTag.Tag as DatabaseFile;
-
-                                selectedFiles.Add(databaseFile);
-
-                                break;
-                        }
+                        RunRecoverClusterTaskAsync(dialog.SelectedPath, selectedFiles);
                     }
-
-                    RunRecoverClusterTaskAsync(dialog.SelectedPath, selectedFiles);
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка при восстановлении текущей директории: {ex.Message}");
             }
         }
 
         private void listRecoverAllToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            using (var dialog = new FolderBrowserDialog())
+            try
             {
-                if (dialog.ShowDialog() == DialogResult.OK)
+                using (var dialog = new FolderBrowserDialog())
                 {
-                    RunRecoverClusterTaskAsync(dialog.SelectedPath, _fileDatabase.GetRootFiles());
-
-                    Console.WriteLine("Finished recovering files.");
+                    if (dialog.ShowDialog() == DialogResult.OK)
+                    {
+                        RunRecoverClusterTaskAsync(dialog.SelectedPath, _fileDatabase.GetRootFiles());
+                        Trace.WriteLine("Команда на восстановление всех файлов отправлена.");
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка при восстановлении всех файлов: {ex.Message}");
             }
         }
 
         private void listRecoverCurrentClusterToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            using (var dialog = new FolderBrowserDialog())
+            try
             {
-                if (dialog.ShowDialog() == DialogResult.OK)
+                using (var dialog = new FolderBrowserDialog())
                 {
-                    var clusterNode = currentClusterNode;
-
-                    NodeTag nodeTag = (NodeTag)clusterNode.Tag;
-
-                    string clusterDir = dialog.SelectedPath + "/" + clusterNode.Text;
-
-                    Directory.CreateDirectory(clusterDir);
-
-                    switch (nodeTag.Type)
+                    if (dialog.ShowDialog() == DialogResult.OK)
                     {
-                        case NodeType.Cluster:
-                            List<DatabaseFile> dirents = nodeTag.Tag as List<DatabaseFile>;
+                        var clusterNode = currentClusterNode;
+                        if (clusterNode == null) return;
 
-                            RunRecoverClusterTaskAsync(clusterDir, dirents);
+                        NodeTag nodeTag = (NodeTag)clusterNode.Tag;
 
-                            break;
+                        string clusterDir = Path.Combine(dialog.SelectedPath, clusterNode.Text);
+
+                        Directory.CreateDirectory(clusterDir);
+
+                        switch (nodeTag.Type)
+                        {
+                            case NodeType.Cluster:
+                                List<DatabaseFile> dirents = nodeTag.Tag as List<DatabaseFile>;
+                                RunRecoverClusterTaskAsync(clusterDir, dirents);
+                                break;
+                        }
+
+                        Trace.WriteLine($"Восстановление кластера {clusterNode.Text} завершено.");
                     }
-
-                    Console.WriteLine("Finished recovering files.");
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка при восстановлении текущего кластера: {ex.Message}");
             }
         }
 
         private void treeRecoverSelectedToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            using (var dialog = new FolderBrowserDialog())
+            try
             {
-                if (dialog.ShowDialog() == DialogResult.OK)
+                using (var dialog = new FolderBrowserDialog())
                 {
-                    var selectedNode = treeView1.SelectedNode;
-
-                    NodeTag nodeTag = (NodeTag)selectedNode.Tag;
-                    switch (nodeTag.Type)
+                    if (dialog.ShowDialog() == DialogResult.OK)
                     {
-                        case NodeType.Cluster:
-                            List<DatabaseFile> dirents = nodeTag.Tag as List<DatabaseFile>;
+                        var selectedNode = treeView1.SelectedNode;
+                        if (selectedNode == null) return;
 
-                            string clusterDir = dialog.SelectedPath + "/" + selectedNode.Text;
-                            Directory.CreateDirectory(clusterDir);
-                            RunRecoverClusterTaskAsync(clusterDir, dirents);
-
-                            break;
-
-                        case NodeType.Dirent:
-                            DatabaseFile dirent = nodeTag.Tag as DatabaseFile;
-
-                            RunRecoverClusterTaskAsync(dialog.SelectedPath, new List<DatabaseFile> { dirent });
-
-                            break;
-                    }
-
-                    Console.WriteLine("Finished recovering files.");
-                }
-            }
-        }
-
-        private void treeRecoverAllToolStripMenuItem_Click(object sender, EventArgs e)
-        {
-            using (var dialog = new FolderBrowserDialog())
-            {
-                if (dialog.ShowDialog() == DialogResult.OK)
-                {
-                    Dictionary<string, List<DatabaseFile>> clusterList = new Dictionary<string, List<DatabaseFile>>();
-
-                    foreach (TreeNode clusterNode in treeView1.Nodes)
-                    {
-                        NodeTag nodeTag = (NodeTag)clusterNode.Tag;
+                        NodeTag nodeTag = (NodeTag)selectedNode.Tag;
                         switch (nodeTag.Type)
                         {
                             case NodeType.Cluster:
                                 List<DatabaseFile> dirents = nodeTag.Tag as List<DatabaseFile>;
 
-                                clusterList[clusterNode.Text] = dirents;
+                                string clusterDir = Path.Combine(dialog.SelectedPath, selectedNode.Text);
+                                Directory.CreateDirectory(clusterDir);
+                                RunRecoverClusterTaskAsync(clusterDir, dirents);
+                                break;
 
+                            case NodeType.Dirent:
+                                DatabaseFile dirent = nodeTag.Tag as DatabaseFile;
+                                RunRecoverClusterTaskAsync(dialog.SelectedPath, new List<DatabaseFile> { dirent });
                                 break;
                         }
-                    }
 
-                    RunRecoverAllTaskAsync(dialog.SelectedPath, clusterList);
+                        Trace.WriteLine("Восстановление выбранного элемента дерева завершено.");
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка в меню восстановления выбранного (дерево): {ex.Message}");
+            }
+        }
+
+        private void treeRecoverAllToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                using (var dialog = new FolderBrowserDialog())
+                {
+                    if (dialog.ShowDialog() == DialogResult.OK)
+                    {
+                        Dictionary<string, List<DatabaseFile>> clusterList = new Dictionary<string, List<DatabaseFile>>();
+
+                        foreach (TreeNode clusterNode in treeView1.Nodes)
+                        {
+                            NodeTag nodeTag = (NodeTag)clusterNode.Tag;
+                            switch (nodeTag.Type)
+                            {
+                                case NodeType.Cluster:
+                                    List<DatabaseFile> dirents = nodeTag.Tag as List<DatabaseFile>;
+                                    clusterList[clusterNode.Text] = dirents;
+                                    break;
+                            }
+                        }
+
+                        RunRecoverAllTaskAsync(dialog.SelectedPath, clusterList);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка при восстановлении всех (дерево): {ex.Message}");
             }
         }
 
@@ -575,7 +725,7 @@ namespace FATXTools
             private DialogResult ShowIOErrorDialog(Exception e)
             {
                 return MessageBox.Show($"{e.Message}",
-                    "Error", MessageBoxButtons.RetryCancel, MessageBoxIcon.Error);
+                    "Ошибка ввода-вывода", MessageBoxButtons.RetryCancel, MessageBoxIcon.Error);
             }
 
             private void WriteFile(string path, DatabaseFile databaseFile)
@@ -586,7 +736,27 @@ namespace FATXTools
 
                     foreach (uint cluster in databaseFile.ClusterChain)
                     {
-                        byte[] clusterData = this.volume.ReadCluster(cluster);
+                        if (cancellationToken.IsCancellationRequested)
+                            break;
+
+                        byte[] clusterData;
+
+                        try
+                        {
+                            clusterData = this.volume.ReadCluster(cluster);
+                        }
+                        catch (IOException exception)
+                        {
+                            // Не удалось прочитать кластер, записываем нулевые байты вместо них.
+                            var position = outFile.Position;
+                            Trace.WriteLine($"Ошибка чтения кластера {cluster}: {exception.Message}. Запись нулей.");
+                            clusterData = new byte[volume.BytesPerCluster];
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine($"Неожиданная ошибка при чтении кластера {cluster}: {ex.Message}. Запись нулей.");
+                            clusterData = new byte[volume.BytesPerCluster];
+                        }
 
                         var writeSize = Math.Min(bytesLeft, this.volume.BytesPerCluster);
                         outFile.Write(clusterData, 0, (int)writeSize);
@@ -598,16 +768,30 @@ namespace FATXTools
 
             private void FileSetTimeStamps(string path, DatabaseFile databaseFile)
             {
-                File.SetCreationTime(path, databaseFile.CreationTime.AsDateTime());
-                File.SetLastWriteTime(path, databaseFile.LastWriteTime.AsDateTime());
-                File.SetLastAccessTime(path, databaseFile.LastAccessTime.AsDateTime());
+                try
+                {
+                    File.SetCreationTime(path, databaseFile.CreationTime.AsDateTime());
+                    File.SetLastWriteTime(path, databaseFile.LastWriteTime.AsDateTime());
+                    File.SetLastAccessTime(path, databaseFile.LastAccessTime.AsDateTime());
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Не удалось установить метки времени для файла {path}: {ex.Message}");
+                }
             }
 
             private void DirectorySetTimestamps(string path, DatabaseFile databaseFile)
             {
-                Directory.SetCreationTime(path, databaseFile.CreationTime.AsDateTime());
-                Directory.SetLastWriteTime(path, databaseFile.LastWriteTime.AsDateTime());
-                Directory.SetLastAccessTime(path, databaseFile.LastAccessTime.AsDateTime());
+                try
+                {
+                    Directory.SetCreationTime(path, databaseFile.CreationTime.AsDateTime());
+                    Directory.SetLastWriteTime(path, databaseFile.LastWriteTime.AsDateTime());
+                    Directory.SetLastAccessTime(path, databaseFile.LastAccessTime.AsDateTime());
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Не удалось установить метки времени для папки {path}: {ex.Message}");
+                }
             }
 
             private void TryIOOperation(Action action)
@@ -627,29 +811,46 @@ namespace FATXTools
                             try
                             {
                                 action();
+                                break; // Успешно
                             }
                             catch (Exception)
                             {
+                                // Продолжаем цикл для повторной попытки
                                 continue;
                             }
                         }
-
-                        break;
+                        else
+                        {
+                            // Отмена
+                            break;
+                        }
                     }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Ошибка при выполнении операции IO: {ex.Message}");
                 }
             }
 
             private void SaveDirectory(DatabaseFile databaseFile, string path)
             {
-                path = path + "\\" + databaseFile.FileName;
-                //Console.WriteLine($"{path}");
+                path = Path.Combine(path, databaseFile.FileName);
+                //Trace.WriteLine($"Обработка директории: {path}");
 
                 currentFile = databaseFile.FileName;
                 progress.Report(numSaved++);
 
                 if (!Directory.Exists(path))
                 {
-                    Directory.CreateDirectory(path);
+                    try
+                    {
+                        Directory.CreateDirectory(path);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.WriteLine($"Не удалось создать директорию {path}: {ex.Message}");
+                        return; // Некуда сохранять дочерние элементы
+                    }
                 }
 
                 foreach (DatabaseFile child in databaseFile.Children)
@@ -665,31 +866,45 @@ namespace FATXTools
 
             private void SaveFile(DatabaseFile databaseFile, string path)
             {
-                path = path + "\\" + databaseFile.FileName;
-                //Console.WriteLine($"{path}");
+                path = Path.Combine(path, databaseFile.FileName);
+                //Trace.WriteLine($"Обработка файла: {path}");
 
                 currentFile = databaseFile.FileName;
                 progress.Report(numSaved++);
 
-                volume.SeekToCluster(databaseFile.FirstCluster);
+                try
+                {
+                    volume.SeekToCluster(databaseFile.FirstCluster);
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Ошибка при поиске кластера для {path}: {ex.Message}");
+                }
 
                 TryIOOperation(() =>
                 {
                     WriteFile(path, databaseFile);
-
                     FileSetTimeStamps(path, databaseFile);
                 });
             }
 
             public void Save(string path, DatabaseFile databaseFile)
             {
-                if (databaseFile.IsDirectory())
+                try
                 {
-                    SaveDirectory(databaseFile, path);
+                    if (databaseFile.IsDirectory())
+                    {
+                        SaveDirectory(databaseFile, path);
+                    }
+                    else
+                    {
+                        SaveFile(databaseFile, path);
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    SaveFile(databaseFile, path);
+                    Trace.WriteLine($"Критическая ошибка при сохранении элемента {databaseFile.FileName}: {ex.Message}");
+                    // Ошибка здесь не должна прерывать весь процесс сохранения остальных файлов
                 }
             }
 
@@ -697,6 +912,9 @@ namespace FATXTools
             {
                 foreach (var databaseFile in dirents)
                 {
+                    if (cancellationToken.IsCancellationRequested)
+                        break;
+
                     Save(path, databaseFile);
                 }
             }
@@ -760,63 +978,74 @@ namespace FATXTools
 
             public int Compare(object x, object y)
             {
-                // Default, don't swap order.
                 int result = 0;
 
-                ListViewItem itemX = (ListViewItem)x;
-                ListViewItem itemY = (ListViewItem)y;
-
-                if (itemX.Tag == null ||
-                    itemY.Tag == null)
+                try
                 {
-                    return result;
+                    ListViewItem itemX = (ListViewItem)x;
+                    ListViewItem itemY = (ListViewItem)y;
+
+                    if (itemX.Tag == null || itemY.Tag == null) return result;
+
+                    // Skip "up" item (..)
+                    if (itemX.Index == 0 || itemY.Index == 0)
+                    {
+                        // Если один из них "..", он должен быть всегда первым
+                        return itemX.Index == 0 ? -1 : 1;
+                    }
+
+                    DatabaseFile direntX = (DatabaseFile)((NodeTag)itemX.Tag).Tag;
+                    DatabaseFile direntY = (DatabaseFile)((NodeTag)itemY.Tag).Tag;
+
+                    if (direntX == null || direntY == null) return result;
+
+                    switch (column)
+                    {
+                        case ColumnIndex.Index:
+                            if (uint.TryParse(itemX.Text, out uint valX) && uint.TryParse(itemY.Text, out uint valY))
+                                result = valX.CompareTo(valY);
+                            break;
+
+                        case ColumnIndex.Name:
+                            result = String.Compare(direntX.FileName, direntY.FileName);
+                            break;
+
+                        case ColumnIndex.Size:
+                            result = direntX.FileSize.CompareTo(direntY.FileSize);
+                            break;
+
+                        case ColumnIndex.Created:
+                            result = direntX.CreationTime.AsDateTime().CompareTo(direntY.CreationTime.AsDateTime());
+                            break;
+
+                        case ColumnIndex.Modified:
+                            result = direntX.LastWriteTime.AsDateTime().CompareTo(direntY.LastWriteTime.AsDateTime());
+                            break;
+
+                        case ColumnIndex.Accessed:
+                            result = direntX.LastAccessTime.AsDateTime().CompareTo(direntY.LastAccessTime.AsDateTime());
+                            break;
+
+                        case ColumnIndex.Offset:
+                            result = direntX.Offset.CompareTo(direntY.Offset);
+                            break;
+
+                        case ColumnIndex.Cluster:
+                            result = direntX.Cluster.CompareTo(direntY.Cluster);
+                            break;
+                    }
+
+                    if (order == SortOrder.Descending)
+                    {
+                        result = -result;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Ошибка при сортировке: {ex.Message}");
                 }
 
-                if (itemX.Index == 0)
-                {
-                    // Skip "up" item
-                    return result;
-                }
-
-                DatabaseFile direntX = (DatabaseFile)((NodeTag)itemX.Tag).Tag;
-                DatabaseFile direntY = (DatabaseFile)((NodeTag)itemY.Tag).Tag;
-
-                switch (column)
-                {
-                    case ColumnIndex.Index:
-                        result = UInt32.Parse(itemX.Text).CompareTo(UInt32.Parse(itemY.Text));
-                        break;
-                    case ColumnIndex.Name:
-                        result = String.Compare(direntX.FileName, direntY.FileName);
-                        break;
-                    case ColumnIndex.Size:
-                        result = direntX.FileSize.CompareTo(direntY.FileSize);
-                        break;
-                    case ColumnIndex.Created:
-                        result = direntX.CreationTime.AsDateTime().CompareTo(direntY.CreationTime.AsDateTime());
-                        break;
-                    case ColumnIndex.Modified:
-                        result = direntX.LastWriteTime.AsDateTime().CompareTo(direntY.LastWriteTime.AsDateTime());
-                        break;
-                    case ColumnIndex.Accessed:
-                        result = direntX.LastAccessTime.AsDateTime().CompareTo(direntY.LastAccessTime.AsDateTime());
-                        break;
-                    case ColumnIndex.Offset:
-                        result = direntX.Offset.CompareTo(direntY.Offset);
-                        break;
-                    case ColumnIndex.Cluster:
-                        result = direntX.Cluster.CompareTo(direntY.Cluster);
-                        break;
-                }
-
-                if (order == SortOrder.Ascending)
-                {
-                    return result;
-                }
-                else
-                {
-                    return -result;
-                }
+                return result;
             }
         }
 
@@ -825,17 +1054,22 @@ namespace FATXTools
             if (listView1.SelectedItems.Count == 0)
                 return;
 
-            NodeTag nodeTag = (NodeTag)listView1.SelectedItems[0].Tag;
-
-            switch (nodeTag.Type)
+            try
             {
-                case NodeType.Dirent:
-                    DatabaseFile databaseFile = (DatabaseFile)nodeTag.Tag;
+                NodeTag nodeTag = (NodeTag)listView1.SelectedItems[0].Tag;
 
-                    FileInfoDialog dialog = new FileInfoDialog(this._volume, databaseFile.GetDirent());
-                    dialog.ShowDialog();
-
-                    break;
+                switch (nodeTag.Type)
+                {
+                    case NodeType.Dirent:
+                        DatabaseFile databaseFile = (DatabaseFile)nodeTag.Tag;
+                        FileInfoDialog dialog = new FileInfoDialog(this._volume, databaseFile.GetDirent());
+                        dialog.ShowDialog();
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка при просмотре информации: {ex.Message}");
             }
         }
 
@@ -844,26 +1078,31 @@ namespace FATXTools
             if (listView1.SelectedItems.Count == 0)
                 return;
 
-            // TODO: Create a new view or dialog for this.
-            NodeTag nodeTag = (NodeTag)listView1.SelectedItems[0].Tag;
-
-            switch (nodeTag.Type)
+            try
             {
-                case NodeType.Dirent:
-                    DatabaseFile databaseFile = (DatabaseFile)nodeTag.Tag;
+                NodeTag nodeTag = (NodeTag)listView1.SelectedItems[0].Tag;
 
-                    foreach (var collision in databaseFile.GetCollisions())
-                    {
-                        Console.WriteLine($"Cluster: {collision} (Offset: {_volume.ClusterToPhysicalOffset(collision)})");
-                        var occupants = _integrityAnalyzer.GetClusterOccupants(collision);
-                        foreach (var occupant in occupants)
+                switch (nodeTag.Type)
+                {
+                    case NodeType.Dirent:
+                        DatabaseFile databaseFile = (DatabaseFile)nodeTag.Tag;
+
+                        foreach (var collision in databaseFile.GetCollisions())
                         {
-                            var o = occupant.GetDirent();
-                            Console.WriteLine($"{o.GetRootDirectoryEntry().Cluster}/{o.GetFullPath()}");
+                            Trace.WriteLine($"Кластер: {collision} (Смещение: {_volume.ClusterToPhysicalOffset(collision)})");
+                            var occupants = _integrityAnalyzer.GetClusterOccupants(collision);
+                            foreach (var occupant in occupants)
+                            {
+                                var o = occupant.GetDirent();
+                                Trace.WriteLine($"{o.GetRootDirectoryEntry().Cluster}/{o.GetFullPath()}");
+                            }
                         }
-                    }
-
-                    break;
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка при просмотре коллизий: {ex.Message}");
             }
         }
 
@@ -872,49 +1111,54 @@ namespace FATXTools
             if (listView1.SelectedItems.Count == 0)
                 return;
 
-            NodeTag nodeTag = (NodeTag)listView1.SelectedItems[0].Tag;
-
-            switch (nodeTag.Type)
+            try
             {
-                case NodeType.Dirent:
-                    DatabaseFile file = (DatabaseFile)nodeTag.Tag;
+                NodeTag nodeTag = (NodeTag)listView1.SelectedItems[0].Tag;
 
-                    ClusterChainDialog dialog = new ClusterChainDialog(this._volume, file);
-                    if (dialog.ShowDialog() == DialogResult.OK)
-                    {
-                        file.ClusterChain = dialog.NewClusterChain;
-
-                        NotifyDatabaseChanged?.Invoke(null, null);
-
-                        RefreshTreeView();
-                    }
-
-                    break;
-
+                switch (nodeTag.Type)
+                {
+                    case NodeType.Dirent:
+                        DatabaseFile file = (DatabaseFile)nodeTag.Tag;
+                        ClusterChainDialog dialog = new ClusterChainDialog(this._volume, file);
+                        if (dialog.ShowDialog() == DialogResult.OK)
+                        {
+                            file.ClusterChain = dialog.NewClusterChain;
+                            NotifyDatabaseChanged?.Invoke(null, null);
+                            RefreshTreeView();
+                        }
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка при редактировании цепочки кластеров: {ex.Message}");
             }
         }
 
         private void testToolStripMenuItem_Click(object sender, EventArgs e)
         {
             // Target: 291581
-            ListViewItem selectedItem = listView1.SelectedItems[0];
-
-            NodeTag nodeTag = (NodeTag)selectedItem.Tag;
-
-            switch (nodeTag.Type)
+            try
             {
-                case NodeType.Dirent:
-                    DatabaseFile databaseFile = (DatabaseFile)nodeTag.Tag;
+                ListViewItem selectedItem = listView1.SelectedItems[0];
+                NodeTag nodeTag = (NodeTag)selectedItem.Tag;
 
-                    if (!databaseFile.ClusterChain.Contains(291581))
-                        databaseFile.ClusterChain.Add(291581);
+                switch (nodeTag.Type)
+                {
+                    case NodeType.Dirent:
+                        DatabaseFile databaseFile = (DatabaseFile)nodeTag.Tag;
+                        if (!databaseFile.ClusterChain.Contains(291581))
+                            databaseFile.ClusterChain.Add(291581);
+                        break;
+                }
 
-                    break;
+                _fileDatabase.Update();
+                PopulateTreeView(_fileDatabase.GetRootFiles());
             }
-
-            _fileDatabase.Update();
-            PopulateTreeView(_fileDatabase.GetRootFiles());
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Ошибка в тестовой функции: {ex.Message}");
+            }
         }
-
     }
 }

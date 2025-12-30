@@ -1,5 +1,7 @@
-﻿using System;
+﻿// Переписано
+using System;
 using System.IO;
+using System.Diagnostics; // 1. Подключаем Trace
 
 namespace FATXTools.Utilities
 {
@@ -7,6 +9,12 @@ namespace FATXTools.Utilities
     {
         public static string FormatBytes(long bytes)
         {
+            // Правило 1: Проверка на некорректные значения (например, -1 при ошибке чтения)
+            if (bytes < 0)
+            {
+                return "Unknown Size";
+            }
+
             string[] Suffix = { "B", "KB", "MB", "GB", "TB" };
             int i;
             double dblSByte = bytes;
@@ -20,27 +28,46 @@ namespace FATXTools.Utilities
 
         public static string UniqueFileName(string path, int maxAttempts = 256)
         {
-            if (!File.Exists(path))
+            // Правило 1: Проверка входных данных
+            if (string.IsNullOrEmpty(path))
             {
-                return path;
+                Trace.WriteLine("[Utility] Метод UniqueFileName получил пустой путь.");
+                return null;
             }
 
-            var fileDirectory = Path.GetDirectoryName(path);
-            var fileName = Path.GetFileName(path);
-            var fileBaseName = Path.GetFileNameWithoutExtension(fileName);
-            var fileExt = Path.GetExtension(fileName);
-
-            for (var i = 1; i <= maxAttempts; i++)
+            try
             {
-                var testPath = $"{fileDirectory}\\{fileBaseName} ({i}){fileExt}";
-
-                if (!File.Exists(testPath))
+                if (!File.Exists(path))
                 {
-                    return testPath;
+                    return path;
                 }
-            }
 
-            return null;
+                var fileDirectory = Path.GetDirectoryName(path);
+                var fileName = Path.GetFileName(path);
+                var fileBaseName = Path.GetFileNameWithoutExtension(fileName);
+                var fileExt = Path.GetExtension(fileName);
+
+                for (var i = 1; i <= maxAttempts; i++)
+                {
+                    // Правило 1: Используем Path.Combine для надежности
+                    var testPath = Path.Combine(fileDirectory, $"{fileBaseName} ({i}){fileExt}");
+
+                    if (!File.Exists(testPath))
+                    {
+                        return testPath;
+                    }
+                }
+
+                // Правило 3: Улучшенное логирование (если лимит попыток превышен)
+                Trace.WriteLine($"[Utility] Не удалось найти уникальное имя для файла {path} за {maxAttempts} попыток.");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                // Правило 1: Отказоустойчивость (ловим ошибки доступа, недопустимые символы и т.д.)
+                Trace.WriteLine($"[Utility] Ошибка при генерации уникального имени для пути '{path}': {ex.Message}");
+                return null;
+            }
         }
     }
 }

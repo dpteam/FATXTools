@@ -1,10 +1,12 @@
-﻿using FATX;
+﻿// Переписано
+using FATX;
 using FATX.FileSystem;
 using FATXTools.Controls;
 using FATXTools.Database;
 using FATXTools.Utilities;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics; // 1. Подключаем Trace
 using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
@@ -47,57 +49,119 @@ namespace FATXTools
 
         public void AddDrive(string name, DriveReader drive)
         {
-            this.driveName = name;
-            this.drive = drive;
-
-            this.driveDatabase = new DriveDatabase(name, drive);
-            this.driveDatabase.OnPartitionAdded += DriveDatabase_OnPartitionAdded;
-            this.driveDatabase.OnPartitionRemoved += DriveDatabase_OnPartitionRemoved;
-
-            // Single task runner for this drive
-            // Currently only one task will be allowed to operate on a drive to avoid race conditions.
-            this.taskRunner = new TaskRunner(this.ParentForm);
-            this.taskRunner.TaskStarted += TaskRunner_TaskStarted;
-            this.taskRunner.TaskCompleted += TaskRunner_TaskCompleted;
-
-            this.partitionTabControl.MouseClick += PartitionTabControl_MouseClick;
-
-            foreach (var volume in drive.Partitions)
+            try
             {
-                AddPartition(volume);
-            }
+                this.driveName = name;
+                this.drive = drive;
 
-            // Fire SelectedIndexChanged event.
-            SelectedIndexChanged();
+                // Инициализация базы может упасть (например, если JSON поврежден)
+                this.driveDatabase = new DriveDatabase(name, drive);
+                this.driveDatabase.OnPartitionAdded += DriveDatabase_OnPartitionAdded;
+                this.driveDatabase.OnPartitionRemoved += DriveDatabase_OnPartitionRemoved;
+
+                // Single task runner for this drive
+                // Currently only one task will be allowed to operate on a drive to avoid race conditions.
+
+                // Правило 1: Защита, если ParentForm равен null
+                Form parentForm = this.ParentForm;
+                if (parentForm == null && this.FindForm() is Form mainForm)
+                {
+                    parentForm = mainForm;
+                }
+
+                this.taskRunner = new TaskRunner(parentForm);
+                this.taskRunner.TaskStarted += TaskRunner_TaskStarted;
+                this.taskRunner.TaskCompleted += TaskRunner_TaskCompleted;
+
+                this.partitionTabControl.MouseClick += PartitionTabControl_MouseClick;
+
+                foreach (var volume in drive.Partitions)
+                {
+                    try
+                    {
+                        AddPartition(volume);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Правило 1: Если один раздел не загружается, пробуем остальные
+                        Trace.WriteLine($"[DriveView] Ошибка при автоматическом добавлении раздела {volume.Name}: {ex.Message}");
+                    }
+                }
+
+                // Fire SelectedIndexChanged event.
+                SelectedIndexChanged();
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveView] Критическая ошибка при инициализации диска {name}: {ex.Message}");
+            }
         }
 
         private void DriveDatabase_OnPartitionRemoved(object sender, RemovePartitionEventArgs e)
         {
-            var index = e.Index;
-            partitionTabControl.TabPages.RemoveAt(index);
-            partitionViews.RemoveAt(index);
+            try
+            {
+                var index = e.Index;
+
+                // Правило 1: Проверка границ перед удалением
+                if (index >= 0 && index < partitionTabControl.TabPages.Count && index < partitionViews.Count)
+                {
+                    partitionTabControl.TabPages.RemoveAt(index);
+                    partitionViews.RemoveAt(index);
+                }
+                else
+                {
+                    Trace.WriteLine($"[DriveView] Попытка удаления раздела с невалидным индексом: {index}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveView] Ошибка удаления раздела (индекс {e.Index}): {ex.Message}");
+            }
         }
 
         private void PartitionTabControl_MouseClick(object sender, MouseEventArgs e)
         {
-            if (e.Button == MouseButtons.Right)
+            try
             {
-                for (var i = 0; i < partitionTabControl.TabCount; i++)
+                if (e.Button == MouseButtons.Right)
                 {
-                    Rectangle r = partitionTabControl.GetTabRect(i);
-                    if (r.Contains(e.Location))
+                    for (var i = 0; i < partitionTabControl.TabCount; i++)
                     {
-                        partitionTabControl.SelectedIndex = i;
-                        this.contextMenuStrip.Show(this.partitionTabControl, e.Location);
-                        break;
+                        Rectangle r = partitionTabControl.GetTabRect(i);
+                        if (r.Contains(e.Location))
+                        {
+                            partitionTabControl.SelectedIndex = i;
+                            // Правило 1: Защита от ошибок при показе меню
+                            try
+                            {
+                                this.contextMenuStrip.Show(this.partitionTabControl, e.Location);
+                            }
+                            catch (Exception menuEx)
+                            {
+                                Trace.WriteLine($"[DriveView] Ошибка отображения контекстного меню: {menuEx.Message}");
+                            }
+                            break;
+                        }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveView] Ошибка клика мышью на вкладках: {ex.Message}");
             }
         }
 
         private void DriveDatabase_OnPartitionAdded(object sender, AddPartitionEventArgs e)
         {
-            AddPartition(e.Volume);
+            try
+            {
+                AddPartition(e.Volume);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveView] Ошибка обработки события добавления раздела: {ex.Message}");
+            }
         }
 
         private void TaskRunner_TaskCompleted(object sender, EventArgs e)
@@ -114,22 +178,34 @@ namespace FATXTools
         {
             try
             {
+                // Правило 2 и 3: Trace и улучшенное логирование
+                Trace.WriteLine($"[DriveView] Попытка монтирования раздела: {volume.Name}");
                 volume.Mount();
-
-                Console.WriteLine($"Successfully mounted {volume.Name}");
+                Trace.WriteLine($"[DriveView] Успешно смонтировано: {volume.Name}");
             }
             catch (Exception e)
             {
-                Console.WriteLine($"Failed to mount {volume.Name}: {e.Message}");
+                // Правило 2 и 3: Trace вместо Console
+                Trace.WriteLine($"[DriveView] Не удалось смонтировать {volume.Name}: {e.Message}");
             }
 
-            var page = new TabPage(volume.Name);
-            var partitionDatabase = driveDatabase.AddPartition(volume);
-            var partitionView = new PartitionView(taskRunner, volume, partitionDatabase);
-            partitionView.Dock = DockStyle.Fill;
-            page.Controls.Add(partitionView);
-            partitionTabControl.TabPages.Add(page);
-            partitionViews.Add(partitionView);
+            try
+            {
+                var page = new TabPage(volume.Name);
+                var partitionDatabase = driveDatabase.AddPartition(volume);
+                var partitionView = new PartitionView(taskRunner, volume, partitionDatabase);
+                partitionView.Dock = DockStyle.Fill;
+                page.Controls.Add(partitionView);
+                partitionTabControl.TabPages.Add(page);
+                partitionViews.Add(partitionView);
+
+                // Обновляем выбор вкладки, чтобы UI обновился
+                SelectedIndexChanged();
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveView] Критическая ошибка при создании вкладки раздела {volume.Name}: {ex.Message}");
+            }
         }
 
         public DriveReader GetDrive()
@@ -139,25 +215,65 @@ namespace FATXTools
 
         public List<Volume> GetVolumes()
         {
-            return partitionViews.Select(partitionView => partitionView.Volume).ToList();
+            try
+            {
+                return partitionViews.Select(partitionView => partitionView.Volume).ToList();
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveView] Ошибка получения списка разделов: {ex.Message}");
+                return new List<Volume>();
+            }
         }
 
         public void Save(string path)
         {
-            driveDatabase.Save(path);
+            try
+            {
+                driveDatabase.Save(path);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveView] Ошибка сохранения базы данных: {ex.Message}");
+                throw;
+            }
         }
 
         public void LoadFromJson(string path)
         {
-            driveDatabase.LoadFromJson(path);
+            try
+            {
+                driveDatabase.LoadFromJson(path);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveView] Ошибка загрузки базы данных: {ex.Message}");
+                throw;
+            }
         }
 
         private void SelectedIndexChanged()
         {
-            TabSelectionChanged?.Invoke(this, partitionTabControl.TabCount == 0 ? null : new PartitionSelectedEventArgs()
+            try
             {
-                volume = partitionViews[partitionTabControl.SelectedIndex].Volume
-            });
+                // Правило 1: Защита от отсутствия вкладок
+                if (partitionTabControl.TabCount > 0 && partitionTabControl.SelectedIndex >= 0 &&
+                    partitionTabControl.SelectedIndex < partitionViews.Count)
+                {
+                    TabSelectionChanged?.Invoke(this, new PartitionSelectedEventArgs()
+                    {
+                        volume = partitionViews[partitionTabControl.SelectedIndex].Volume
+                    });
+                }
+                else
+                {
+                    TabSelectionChanged?.Invoke(this, null);
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveView] Ошибка обновления выбора вкладки: {ex.Message}");
+            }
         }
 
         private void partitionTabControl_SelectedIndexChanged(object sender, EventArgs e)
@@ -165,12 +281,33 @@ namespace FATXTools
             SelectedIndexChanged();
         }
 
-        private void ToolStripMenuItem1_Click(object sender, System.EventArgs e)
+        private void toolStripMenuItem1_Click(object sender, System.EventArgs e)
         {
-            var dialogResult = MessageBox.Show("Are you sure you want to remove this partition?", "Are you sure?", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-            if (dialogResult == DialogResult.Yes)
+            try
             {
-                driveDatabase.RemovePartition(partitionTabControl.SelectedIndex);
+                // Правило 1: Проверка выбранной вкладки перед удалением
+                if (partitionTabControl.SelectedIndex < 0 || partitionTabControl.SelectedIndex >= partitionViews.Count)
+                {
+                    Trace.WriteLine("[DriveView] Попытка удалить раздел, но ничего не выбрано.");
+                    return;
+                }
+
+                var dialogResult = MessageBox.Show("Are you sure you want to remove this partition?", "Are you sure?", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (dialogResult == DialogResult.Yes)
+                {
+                    try
+                    {
+                        driveDatabase.RemovePartition(partitionTabControl.SelectedIndex);
+                    }
+                    catch (Exception dbEx)
+                    {
+                        Trace.WriteLine($"[DriveView] Ошибка удаления из базы данных: {dbEx.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[DriveView] Критическая ошибка в обработчике удаления: {ex.Message}");
             }
         }
     }
