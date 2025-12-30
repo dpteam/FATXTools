@@ -1,12 +1,11 @@
-﻿// Переписано
-using FATX.Analyzers;
+﻿using FATX.Analyzers;
 using FATX.FileSystem;
 using FATXTools.Dialogs;
 using FATXTools.Utilities;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics; // 1. Подключаем Trace
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Threading;
@@ -16,6 +15,7 @@ namespace FATXTools.Controls
 {
     public partial class FileExplorer : UserControl
     {
+        // Цвет для удаленных элементов (розоватый фон)
         private Color deletedColor = Color.FromArgb(255, 200, 200);
 
         private PartitionView parent;
@@ -84,11 +84,13 @@ namespace FATXTools.Controls
 
                         node.Tag = new NodeTag(dirent, NodeType.Dirent);
 
+                        // Удаленные папки в дереве подсвечиваем серым текстом
                         if (dirent.IsDeleted())
                         {
                             node.ForeColor = Color.FromArgb(100, 100, 100);
                         }
 
+                        // Рекурсивно заходим внутрь, даже если папка удалена
                         PopulateTreeNodeDirectory(node, dirent.Children);
                     }
                 }
@@ -107,6 +109,8 @@ namespace FATXTools.Controls
             // Add "up" item
             var upDir = listView1.Items.Add("");
             upDir.SubItems.Add("...");
+
+            // Логика для кнопки "Назад"
             if (parent != null)
             {
                 if (parent.GetParent() != null)
@@ -126,53 +130,56 @@ namespace FATXTools.Controls
             List<ListViewItem> items = new List<ListViewItem>();
             int index = 1;
 
-            foreach (DirectoryEntry dirent in dirents)
+            if (dirents != null)
             {
-                try
+                foreach (DirectoryEntry dirent in dirents)
                 {
-                    ListViewItem item = new ListViewItem(index.ToString());
-                    item.Tag = new NodeTag(dirent, NodeType.Dirent);
-
-                    item.SubItems.Add(dirent.FileName);
-
-                    // Правило 1: Защита при получении даты
-                    DateTime creationTime = new DateTime();
-                    DateTime lastWriteTime = new DateTime();
-                    DateTime lastAccessTime = new DateTime();
-
                     try
                     {
-                        creationTime = dirent.CreationTime.AsDateTime();
-                        lastWriteTime = dirent.LastWriteTime.AsDateTime();
-                        lastAccessTime = dirent.LastAccessTime.AsDateTime();
-                    }
-                    catch { /* Используем MinValue если парсинг упал */ }
+                        ListViewItem item = new ListViewItem(index.ToString());
+                        item.Tag = new NodeTag(dirent, NodeType.Dirent);
 
-                    string sizeStr = "";
-                    if (!dirent.IsDirectory())
+                        item.SubItems.Add(dirent.FileName);
+
+                        // Защита при получении даты
+                        DateTime creationTime = new DateTime();
+                        DateTime lastWriteTime = new DateTime();
+                        DateTime lastAccessTime = new DateTime();
+
+                        try
+                        {
+                            creationTime = dirent.CreationTime.AsDateTime();
+                            lastWriteTime = dirent.LastWriteTime.AsDateTime();
+                            lastAccessTime = dirent.LastAccessTime.AsDateTime();
+                        }
+                        catch { /* Используем MinValue если парсинг упал */ }
+
+                        string sizeStr = "";
+                        if (!dirent.IsDirectory())
+                        {
+                            sizeStr = Utility.FormatBytes(dirent.FileSize);
+                        }
+
+                        item.SubItems.Add(sizeStr);
+                        item.SubItems.Add(creationTime.ToString());
+                        item.SubItems.Add(lastWriteTime.ToString());
+                        item.SubItems.Add(lastAccessTime.ToString());
+                        item.SubItems.Add("0x" + dirent.Offset.ToString("x"));
+                        item.SubItems.Add(dirent.Cluster.ToString());
+
+                        // ВАЖНО: Удаленные элементы в списке подсвечиваем цветом
+                        if (dirent.IsDeleted())
+                        {
+                            item.BackColor = deletedColor;
+                        }
+
+                        index++;
+                        items.Add(item);
+                    }
+                    catch (Exception ex)
                     {
-                        sizeStr = Utility.FormatBytes(dirent.FileSize);
+                        Trace.WriteLine($"[FileExplorer] Ошибка добавления файла в список {dirent.FileName}: {ex.Message}");
                     }
-
-                    item.SubItems.Add(sizeStr);
-                    item.SubItems.Add(creationTime.ToString());
-                    item.SubItems.Add(lastWriteTime.ToString());
-                    item.SubItems.Add(lastAccessTime.ToString());
-                    item.SubItems.Add("0x" + dirent.Offset.ToString("x"));
-                    item.SubItems.Add(dirent.Cluster.ToString());
-
-                    if (dirent.IsDeleted())
-                    {
-                        item.BackColor = deletedColor;
-                    }
-
-                    index++;
-                    items.Add(item);
-                }
-                catch (Exception ex)
-                {
-                    // Правило 1: Одна запись не должна ломать отрисовку списка
-                    Trace.WriteLine($"[FileExplorer] Ошибка добавления файла в список {dirent.FileName}: {ex.Message}");
                 }
             }
 
@@ -191,21 +198,24 @@ namespace FATXTools.Controls
                     case NodeType.Dirent:
                         DirectoryEntry dirent = nodeTag.Tag as DirectoryEntry;
 
-                        if (dirent.IsDeleted())
-                        {
-                            // Правило 2: Trace.WriteLine вместо Console
-                            Trace.WriteLine($"[FileExplorer] Попытка загрузки содержимого удаленной директории: {dirent.FileName}");
-                        }
-                        else
+                        // Пытаемся загрузить содержимое, даже если папка удалена
+                        try
                         {
                             PopulateListView(dirent.Children, dirent);
+
+                            if (dirent.IsDeleted())
+                            {
+                                Trace.WriteLine($"[FileExplorer] Открыто содержимое удаленной директории: {dirent.FileName}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine($"[FileExplorer] Не удалось загрузить содержимое директории {dirent.FileName}: {ex.Message}");
                         }
 
                         break;
                     case NodeType.Root:
-
                         PopulateListView(this.volume.GetRoot(), null);
-
                         break;
                 }
             }
@@ -219,7 +229,6 @@ namespace FATXTools.Controls
         {
             try
             {
-                // Правило 1: Проверка выбранности элементов
                 if (listView1.SelectedItems.Count == 0)
                 {
                     return;
@@ -235,17 +244,22 @@ namespace FATXTools.Controls
 
                         if (!dirent.IsDirectory())
                         {
-                            return;
+                            return; // Это файл, не заходим
                         }
 
-                        if (dirent.IsDeleted())
-                        {
-                            // Правило 2: Trace.WriteLine вместо Console
-                            Trace.WriteLine($"[FileExplorer] Попытка отображения содержимого удаленной директории: {dirent.FileName}");
-                        }
-                        else
+                        // Пытаемся зайти в папку, даже если она удалена
+                        try
                         {
                             PopulateListView(dirent.Children, dirent);
+
+                            if (dirent.IsDeleted())
+                            {
+                                Trace.WriteLine($"[FileExplorer] Переход в удаленную директорию: {dirent.FileName}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine($"[FileExplorer] Ошибка при открытии директории {dirent.FileName}: {ex.Message}");
                         }
 
                         break;
@@ -265,7 +279,6 @@ namespace FATXTools.Controls
         {
             try
             {
-                // TODO: Make into a user controlled setting
                 var searchLength = this.volume.FileAreaLength;
                 var searchInterval = this.volume.BytesPerCluster;
 
@@ -278,18 +291,15 @@ namespace FATXTools.Controls
                 Trace.WriteLine($"[FileExplorer] Запуск анализатора метаданных...");
 
                 await taskRunner.RunTaskAsync("Metadata Analyzer",
-                    // Task
                     (CancellationToken cancellationToken, IProgress<int> progress) =>
                     {
                         analyzer.Analyze(cancellationToken, progress);
                     },
-                    // Progress Update
                     (int progress) =>
                     {
                         taskRunner.UpdateLabel($"Processing cluster {progress}/{numBlocks}");
                         taskRunner.UpdateProgress(progress);
                     },
-                    // On Task Completion
                     () =>
                     {
                         OnMetadataAnalyzerCompleted?.Invoke(this, new MetadataAnalyzerResults()
@@ -308,7 +318,6 @@ namespace FATXTools.Controls
         {
             try
             {
-                // TODO: Make into a user controlled setting
                 var searchLength = this.volume.FileAreaLength;
                 var searchInterval = Properties.Settings.Default.FileCarverInterval;
 
@@ -321,18 +330,15 @@ namespace FATXTools.Controls
                 Trace.WriteLine($"[FileExplorer] Запуск FileCarver...");
 
                 await taskRunner.RunTaskAsync("File Carver",
-                    // Task
                     (CancellationToken cancellationToken, IProgress<int> progress) =>
                     {
                         carver.Analyze(cancellationToken, progress);
                     },
-                    // Progress Update
                     (int progress) =>
                     {
                         taskRunner.UpdateLabel($"Processing block {progress}/{numBlocks}");
                         taskRunner.UpdateProgress(progress);
                     },
-                    // On Task Completion
                     () =>
                     {
                         OnFileCarverCompleted?.Invoke(this, new FileCarverResults()
@@ -355,9 +361,7 @@ namespace FATXTools.Controls
                 {
                     case NodeType.Dirent:
                         DirectoryEntry dirent = nodeTag.Tag as DirectoryEntry;
-
                         RunSaveDirectoryEntryTaskAsync(path, dirent);
-
                         break;
                     case NodeType.Root:
                         RunSaveAllTaskAsync(path, volume.GetRoot());
@@ -372,10 +376,17 @@ namespace FATXTools.Controls
 
         private void treeSaveSelectedToolStripMenuItem1_Click(object sender, EventArgs e)
         {
-            FolderBrowserDialog dialog = new FolderBrowserDialog();
-            if (dialog.ShowDialog() == DialogResult.OK)
+            try
             {
-                SaveNodeTag(dialog.SelectedPath, (NodeTag)treeView1.SelectedNode.Tag);
+                FolderBrowserDialog dialog = new FolderBrowserDialog();
+                if (dialog.ShowDialog() == DialogResult.OK)
+                {
+                    SaveNodeTag(dialog.SelectedPath, (NodeTag)treeView1.SelectedNode.Tag);
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка при сохранении выделенного в дереве: {ex.Message}");
             }
         }
 
@@ -398,9 +409,7 @@ namespace FATXTools.Controls
                         {
                             case NodeType.Dirent:
                                 DirectoryEntry dirent = nodeTag.Tag as DirectoryEntry;
-
                                 selectedFiles.Add(dirent);
-
                                 break;
                         }
                     }
@@ -410,7 +419,7 @@ namespace FATXTools.Controls
             }
             catch (Exception ex)
             {
-                Trace.WriteLine($"[FileExplorer] Ошибка сохранения выделенного: {ex.Message}");
+                Trace.WriteLine($"[FileExplorer] Ошибка сохранения выделенного в списке: {ex.Message}");
             }
         }
 
@@ -418,68 +427,96 @@ namespace FATXTools.Controls
         {
             SaveContentTask saveContentTask = null;
 
-            var numFiles = dirent.CountFiles();
-            taskRunner.Maximum = numFiles;
-            taskRunner.Interval = 1;
+            try
+            {
+                var numFiles = dirent.CountFiles();
+                taskRunner.Maximum = numFiles;
+                taskRunner.Interval = 1;
 
-            await taskRunner.RunTaskAsync("Save File",
-                (CancellationToken cancellationToken, IProgress<int> progress) =>
-                {
-                    saveContentTask = new SaveContentTask(this.volume, cancellationToken, progress);
-                    saveContentTask.Save(path, dirent);
-                },
-                (int progress) =>
-                {
-                    string currentFile = saveContentTask.GetCurrentFile();
-                    taskRunner.UpdateLabel($"{progress}/{numFiles}: {currentFile}");
-                    taskRunner.UpdateProgress(progress);
-                },
-                () =>
-                {
-                    Trace.WriteLine("[FileExplorer] Сохранение директории завершено.");
-                });
+                await taskRunner.RunTaskAsync("Save File",
+                    (CancellationToken cancellationToken, IProgress<int> progress) =>
+                    {
+                        saveContentTask = new SaveContentTask(this.volume, cancellationToken, progress);
+                        saveContentTask.Save(path, dirent);
+                    },
+                    (int progress) =>
+                    {
+                        string currentFile = saveContentTask.GetCurrentFile();
+                        taskRunner.UpdateLabel($"{progress}/{numFiles}: {currentFile}");
+                        taskRunner.UpdateProgress(progress);
+                    },
+                    () =>
+                    {
+                        Trace.WriteLine("[FileExplorer] Сохранение директории завершено.");
+                    });
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка задачи сохранения директории: {ex.Message}");
+            }
         }
 
         private async void RunSaveAllTaskAsync(string path, List<DirectoryEntry> dirents)
         {
             SaveContentTask saveContentTask = null;
-            var numFiles = volume.CountFiles();
-            taskRunner.Maximum = numFiles;
-            taskRunner.Interval = 1;
+            try
+            {
+                var numFiles = volume.CountFiles();
+                taskRunner.Maximum = numFiles;
+                taskRunner.Interval = 1;
 
-            await taskRunner.RunTaskAsync("Save All",
-                (CancellationToken cancellationToken, IProgress<int> progress) =>
-                {
-                    saveContentTask = new SaveContentTask(this.volume, cancellationToken, progress);
-                    saveContentTask.SaveAll(path, dirents);
-                },
-                (int progress) =>
-                {
-                    string currentFile = saveContentTask.GetCurrentFile();
-                    taskRunner.UpdateLabel($"{progress}/{numFiles}: {currentFile}");
-                    taskRunner.UpdateProgress(progress);
-                },
-                () =>
-                {
-                    Trace.WriteLine("[FileExplorer] Сохранение всех файлов завершено.");
-                });
+                await taskRunner.RunTaskAsync("Save All",
+                    (CancellationToken cancellationToken, IProgress<int> progress) =>
+                    {
+                        saveContentTask = new SaveContentTask(this.volume, cancellationToken, progress);
+                        saveContentTask.SaveAll(path, dirents);
+                    },
+                    (int progress) =>
+                    {
+                        string currentFile = saveContentTask.GetCurrentFile();
+                        taskRunner.UpdateLabel($"{progress}/{numFiles}: {currentFile}");
+                        taskRunner.UpdateProgress(progress);
+                    },
+                    () =>
+                    {
+                        Trace.WriteLine("[FileExplorer] Сохранение всех файлов завершено.");
+                    });
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка задачи сохранения всех файлов: {ex.Message}");
+            }
         }
 
         private void saveAllToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            FolderBrowserDialog dialog = new FolderBrowserDialog();
-            if (dialog.ShowDialog() == DialogResult.OK)
+            try
             {
-                RunSaveAllTaskAsync(dialog.SelectedPath, volume.GetRoot());
+                FolderBrowserDialog dialog = new FolderBrowserDialog();
+                if (dialog.ShowDialog() == DialogResult.OK)
+                {
+                    RunSaveAllTaskAsync(dialog.SelectedPath, volume.GetRoot());
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка (saveAllToolStripMenuItem): {ex.Message}");
             }
         }
 
         private void saveAllToolStripMenuItem2_Click(object sender, EventArgs e)
         {
-            FolderBrowserDialog dialog = new FolderBrowserDialog();
-            if (dialog.ShowDialog() == DialogResult.OK)
+            try
             {
-                RunSaveAllTaskAsync(dialog.SelectedPath, volume.GetRoot());
+                FolderBrowserDialog dialog = new FolderBrowserDialog();
+                if (dialog.ShowDialog() == DialogResult.OK)
+                {
+                    RunSaveAllTaskAsync(dialog.SelectedPath, volume.GetRoot());
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[FileExplorer] Ошибка (saveAllToolStripMenuItem2): {ex.Message}");
             }
         }
 
@@ -496,10 +533,8 @@ namespace FATXTools.Controls
                 {
                     case NodeType.Dirent:
                         DirectoryEntry dirent = (DirectoryEntry)nodeTag.Tag;
-
                         FileInfoDialog dialog = new FileInfoDialog(this.volume, dirent);
                         dialog.ShowDialog();
-
                         break;
                 }
             }
@@ -512,23 +547,17 @@ namespace FATXTools.Controls
         public class SaveContentTask
         {
             private CancellationToken cancellationToken;
-
             private IProgress<int> progress;
-
             private Volume volume;
-
             private string currentFile;
-
             private int numSaved;
 
             public SaveContentTask(Volume volume, CancellationToken cancellationToken, IProgress<int> progress)
             {
                 currentFile = String.Empty;
-
                 this.cancellationToken = cancellationToken;
                 this.progress = progress;
                 this.volume = volume;
-
                 this.numSaved = 0;
             }
 
@@ -541,6 +570,29 @@ namespace FATXTools.Controls
             {
                 Trace.WriteLine($"[SaveContentTask] Ошибка IO: {e.Message}");
                 return MessageBox.Show($"Не удалось записать файл: {e.Message}\n\nПовторить?", "Ошибка записи", MessageBoxButtons.RetryCancel, MessageBoxIcon.Error);
+            }
+
+            /// <summary>
+            /// Исправление бага #29: The UTC time represented when the offset is applied must be between year 0 and 10,00.
+            /// Если дата некорректна (MinValue или очень старая), возвращаем текущую дату.
+            /// </summary>
+            private DateTime GetSafeDateTime(DateTime dt)
+            {
+                try
+                {
+                    // FAT даты обычно начинаются с 1980 года.
+                    // Если год меньше 1980 (например 0001 MinValue), то при попытке установить 
+                    // время файла Windows пытается сконвертировать UTC/Local и падает с ошибкой Offset.
+                    if (dt.Year < 1980)
+                    {
+                        return DateTime.Now;
+                    }
+                    return dt;
+                }
+                catch
+                {
+                    return DateTime.Now;
+                }
             }
 
             private void WriteFile(string path, DirectoryEntry dirent, List<uint> chainMap)
@@ -559,9 +611,7 @@ namespace FATXTools.Controls
                         }
                         catch (IOException exception)
                         {
-                            // Failed to read cluster, write null bytes instead.
                             var position = outFile.Position;
-                            // Правило 2: Trace.WriteLine вместо Console
                             Trace.WriteLine($"[SaveContentTask] {exception.Message}");
                             Trace.WriteLine($"[SaveContentTask] Из-за исключения, записан пустой кластер в файл: {path} (Offset: {position})");
                             clusterData = new byte[volume.BytesPerCluster];
@@ -583,9 +633,14 @@ namespace FATXTools.Controls
             {
                 try
                 {
-                    File.SetCreationTime(path, dirent.CreationTime.AsDateTime());
-                    File.SetLastWriteTime(path, dirent.LastWriteTime.AsDateTime());
-                    File.SetLastAccessTime(path, dirent.LastAccessTime.AsDateTime());
+                    // Используем безопасное получение даты, чтобы избежать падения на баганых дампах
+                    var creationTime = GetSafeDateTime(dirent.CreationTime.AsDateTime());
+                    var lastWriteTime = GetSafeDateTime(dirent.LastWriteTime.AsDateTime());
+                    var lastAccessTime = GetSafeDateTime(dirent.LastAccessTime.AsDateTime());
+
+                    File.SetCreationTime(path, creationTime);
+                    File.SetLastWriteTime(path, lastWriteTime);
+                    File.SetLastAccessTime(path, lastAccessTime);
                 }
                 catch (Exception ex)
                 {
@@ -597,9 +652,14 @@ namespace FATXTools.Controls
             {
                 try
                 {
-                    Directory.SetCreationTime(path, dirent.CreationTime.AsDateTime());
-                    Directory.SetLastWriteTime(path, dirent.LastWriteTime.AsDateTime());
-                    Directory.SetLastAccessTime(path, dirent.LastAccessTime.AsDateTime());
+                    // Используем безопасное получение даты
+                    var creationTime = GetSafeDateTime(dirent.CreationTime.AsDateTime());
+                    var lastWriteTime = GetSafeDateTime(dirent.LastWriteTime.AsDateTime());
+                    var lastAccessTime = GetSafeDateTime(dirent.LastAccessTime.AsDateTime());
+
+                    Directory.SetCreationTime(path, creationTime);
+                    Directory.SetLastWriteTime(path, lastWriteTime);
+                    Directory.SetLastAccessTime(path, lastAccessTime);
                 }
                 catch (Exception ex)
                 {
@@ -624,7 +684,6 @@ namespace FATXTools.Controls
                     }
                     catch (Exception ex)
                     {
-                        // Другие исключения не ретраим
                         Trace.WriteLine($"[SaveContentTask] Критическая ошибка (не IO): {ex.Message}");
                         throw;
                     }
@@ -648,13 +707,10 @@ namespace FATXTools.Controls
 
             private void SaveFile(string path, DirectoryEntry dirent)
             {
-                // Правило 1: Безопасная склейка путей
                 string safePath = Path.Combine(path, dirent.FileName);
 
-                Console.WriteLine(safePath); // Оригинал
                 Trace.WriteLine($"[SaveContentTask] Сохранение файла: {safePath}");
 
-                // Report where we are at
                 currentFile = dirent.FileName;
                 progress.Report(numSaved++);
 
@@ -676,16 +732,14 @@ namespace FATXTools.Controls
             {
                 string safePath = Path.Combine(path, dirent.FileName);
 
-                Console.WriteLine(safePath);
                 Trace.WriteLine($"[SaveContentTask] Сохранение директории: {safePath}");
 
-                // Report where we are at
                 currentFile = dirent.FileName;
                 progress.Report(numSaved++);
 
-                Directory.CreateDirectory(path); // Создаем родительскую папку
+                Directory.CreateDirectory(path);
 
-                string childPath = safePath; // Передаем путь текущей папки как родитель
+                string childPath = safePath;
 
                 foreach (DirectoryEntry child in dirent.Children)
                 {
@@ -709,7 +763,7 @@ namespace FATXTools.Controls
 
                 currentFile = dirent.GetFullPath();
 
-                Trace.WriteLine($"[SaveContentTask] {safePath}: Не удалось сохранить удаленные файлы.");
+                Trace.WriteLine($"[SaveContentTask] {safePath}: Сохранение удаленных файлов не поддерживается или невозможно.");
             }
 
             private void SaveDirectoryEntry(string path, DirectoryEntry dirent)
@@ -816,20 +870,16 @@ namespace FATXTools.Controls
 
             public int Compare(object x, object y)
             {
-                // Default, don't swap order.
                 int result = 0;
 
                 ListViewItem itemX = (ListViewItem)x;
                 ListViewItem itemY = (ListViewItem)y;
 
-                // Правило 1: Проверка на null тегов
                 if (itemX?.Tag == null || itemY?.Tag == null)
                 {
                     return result;
                 }
 
-                // Skip "up" item (Index == 0 is handled by string parsing logic below implicitly if needed, 
-                // but checking Tag type is safer)
                 NodeTag tagX = (NodeTag)itemX.Tag;
                 NodeTag tagY = (NodeTag)itemY.Tag;
 
@@ -846,7 +896,6 @@ namespace FATXTools.Controls
                 switch (column)
                 {
                     case ColumnIndex.Index:
-                        // Безопасный парсинг
                         uint valX = 0, valY = 0;
                         if (uint.TryParse(itemX.Text, out valX) && uint.TryParse(itemY.Text, out valY))
                             result = valX.CompareTo(valY);
@@ -858,7 +907,6 @@ namespace FATXTools.Controls
                         result = direntX.FileSize.CompareTo(direntY.FileSize);
                         break;
                     case ColumnIndex.Created:
-                        // Правило 1: Защита при сортировке по дате
                         try
                         {
                             result = direntX.CreationTime.AsDateTime().CompareTo(direntY.CreationTime.AsDateTime());
